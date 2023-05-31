@@ -1,12 +1,11 @@
-use ash::extensions::ext::ShaderObject;
 use ash::vk;
-use ash::vk::BufferDeviceAddressInfo;
 use ash::vk::CompareOp;
 use ash::vk::CullModeFlags;
+use ash::vk::DescriptorBufferBindingInfoEXT;
+use ash::vk::DeviceSize;
 use ash::vk::Format;
 use ash::vk::FrontFace;
 use ash::vk::PipelineBindPoint;
-use ash::vk::PipelineLayout;
 use ash::vk::PrimitiveTopology;
 use ash::vk::ShaderCodeTypeEXT;
 use ash::vk::ShaderCreateInfoEXT;
@@ -15,23 +14,37 @@ use ash::vk::VertexInputAttributeDescription2EXT;
 use ash::vk::VertexInputBindingDescription2EXT;
 use ash::vk::VertexInputRate;
 use buffer::Buffer;
-use buffer::Image;
 use ctx::*;
 use gpu_allocator::MemoryLocation;
-use hassle_rs::compile_hlsl;
-use passes::comp::CompPass;
 use std::default::Default;
 use std::ffi::CStr;
 use std::mem;
+use std::mem::size_of_val;
 
 mod buffer;
+mod command;
 mod ctx;
+mod graph;
 mod passes;
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C, align(16))]
 struct Vertex {
     pos: [f32; 4],
     color: [f32; 4],
+}
+
+#[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C, align(16))]
+struct Misc {
+    color: [f32; 4],
+}
+
+#[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
+#[repr(C, align(16))]
+struct Uniform {
+    buf_pointer: u64,
+    _pad: [f32; 2],
 }
 
 fn main() {
@@ -39,44 +52,39 @@ fn main() {
         let (window_width, window_height) = (1280, 720);
         let mut base = ExampleBase::new(window_width, window_height);
 
-        let vert_spirv = compile_hlsl(
-            "vert.hlsl",
-            &std::fs::read_to_string(r#"C:\Users\dylan\dev\someday\shader\vert.hlsl"#).unwrap(),
-            "main",
-            "vs_6_5",
-            &["-spirv"],
-            &[],
-        )
-        .unwrap();
-        let frag_spirv = compile_hlsl(
-            "frag.hlsl",
-            &std::fs::read_to_string(r#"C:\Users\dylan\dev\someday\shader\frag.hlsl"#).unwrap(),
-            "main",
-            "ps_6_5",
-            &["-spirv"],
-            &[],
-        )
-        .unwrap();
-
-        let shaders = base
-            .shader_object
-            .create_shaders(
-                &[
-                    ShaderCreateInfoEXT::default()
-                        .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
-                        .code(&vert_spirv)
-                        .code_type(ShaderCodeTypeEXT::SPIRV)
-                        .stage(ShaderStageFlags::VERTEX)
-                        .next_stage(ShaderStageFlags::FRAGMENT),
-                    ShaderCreateInfoEXT::default()
-                        .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
-                        .code(&frag_spirv)
-                        .code_type(ShaderCodeTypeEXT::SPIRV)
-                        .stage(ShaderStageFlags::FRAGMENT),
-                ],
-                None,
+        let compiler = shaderc::Compiler::new().unwrap();
+        let mut options = shaderc::CompileOptions::new().unwrap();
+        options.add_macro_definition("EP", Some("main"));
+        options.set_target_env(
+            shaderc::TargetEnv::Vulkan,
+            shaderc::EnvVersion::Vulkan1_2 as u32,
+        );
+        options.set_generate_debug_info();
+        let vert = compiler
+            .compile_into_spirv(
+                &std::fs::read_to_string(r#"C:\Users\dylan\dev\someday\shader\main.vert"#).unwrap(),
+                shaderc::ShaderKind::Vertex,
+                "main.vert",
+                "main",
+                Some(&options),
             )
             .unwrap();
+        let vert_spirv = vert.as_binary_u8();
+        let frag = compiler
+            .compile_into_spirv(
+                &std::fs::read_to_string(r#"C:\Users\dylan\dev\someday\shader\main.frag"#).unwrap(),
+                shaderc::ShaderKind::Fragment,
+                "main.frag",
+                "main",
+                Some(&options),
+            )
+            .unwrap();
+        let frag_spirv = frag.as_binary_u8();
+
+        let refl_info = rspirv_reflect::Reflection::new_from_spirv(&frag_spirv).unwrap();
+        let sets = refl_info.get_descriptor_sets().unwrap();
+
+        println!("{:?}", sets);
 
         let (mut index_buffer, index_len) = {
             let index_buffer_data = [0u32, 1, 2];
@@ -156,35 +164,35 @@ fn main() {
         }];
         let scissors = [base.surface_resolution.into()];
 
-        let mut output_tex = Image::new(
-            &base.device,
-            &mut base.allocator,
-            &vk::ImageCreateInfo {
-                image_type: vk::ImageType::TYPE_2D,
-                format: vk::Format::R16G16B16A16_SFLOAT,
-                extent: vk::Extent3D {
-                    width: window_width,
-                    height: window_height,
-                    depth: 1,
-                },
-                mip_levels: 1,
-                array_layers: 1,
-                samples: vk::SampleCountFlags::TYPE_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::STORAGE,
-                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                ..Default::default()
-            },
-            MemoryLocation::GpuOnly,
-        );
+        // let mut output_tex = Image::new(
+        //     &base.device,
+        //     &mut base.allocator,
+        //     &vk::ImageCreateInfo {
+        //         image_type: vk::ImageType::TYPE_2D,
+        //         format: vk::Format::R16G16B16A16_SFLOAT,
+        //         extent: vk::Extent3D {
+        //             width: window_width,
+        //             height: window_height,
+        //             depth: 1,
+        //         },
+        //         mip_levels: 1,
+        //         array_layers: 1,
+        //         samples: vk::SampleCountFlags::TYPE_1,
+        //         tiling: vk::ImageTiling::OPTIMAL,
+        //         usage: vk::ImageUsageFlags::STORAGE,
+        //         sharing_mode: vk::SharingMode::EXCLUSIVE,
+        //         ..Default::default()
+        //     },
+        //     MemoryLocation::GpuOnly,
+        // );
 
         // let device_address = base.device.get_buffer_device_address(
         //     &BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer),
         // );
-        let comp_pass = CompPass::new(&mut base, &mut output_tex);
+        // let comp_pass = CompPass::new(&mut base, &mut output_tex);
 
         let descriptor_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_IMAGE,
+            ty: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
         }];
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
@@ -197,9 +205,10 @@ fn main() {
             .unwrap();
 
         let desc_layout_bindings = [vk::DescriptorSetLayoutBinding {
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::COMPUTE,
+            stage_flags: vk::ShaderStageFlags::ALL,
             ..Default::default()
         }];
 
@@ -219,35 +228,106 @@ fn main() {
             .allocate_descriptor_sets(&desc_alloc_info)
             .unwrap();
 
-        let view = output_tex.create_view(&base.device);
+        let misc_buf = {
+            let buf = Buffer::new(
+                &base.device,
+                &mut base.allocator,
+                &vk::BufferCreateInfo::default()
+                    .size(std::mem::size_of::<Misc>() as u64)
+                    .usage(vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                MemoryLocation::CpuToGpu,
+            );
 
-        let write_desc_sets = [vk::WriteDescriptorSet {
-            dst_set: descriptor_sets[0],
-            dst_binding: 0,
-            descriptor_count: 1,
-            descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
-            p_image_info: &vk::DescriptorImageInfo {
-                image_layout: vk::ImageLayout::GENERAL,
-                image_view: view,
-                sampler: vk::Sampler {
-                    ..Default::default()
-                },
+            let colors = &[Misc {
+                color: [0.0, 1.0, 0.0, 1.0],
+            }];
+
+            println!("misc type size {:?}", std::mem::size_of::<Misc>() as u64);
+            println!("misc buf size {:?}", size_of_val(colors));
+
+            buf.copy_from_slice(colors, 0);
+
+            buf
+        };
+
+        let uniform_buf = {
+            let buf = Buffer::new(
+                &base.device,
+                &mut base.allocator,
+                &vk::BufferCreateInfo::default()
+                    .size(std::mem::size_of::<Uniform>() as u64)
+                    .usage(
+                        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                            | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    )
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                MemoryLocation::CpuToGpu,
+            );
+
+            let uniform = Uniform {
+                buf_pointer: misc_buf.device_addr,
                 ..Default::default()
-            },
-            ..Default::default()
-        }];
+            };
+
+            println!(
+                "uniform type size {:?}",
+                std::mem::size_of::<Uniform>() as u64
+            );
+            println!("uniform buf size {:?}", size_of_val(&[uniform]));
+
+            buf.copy_from_slice(&[uniform], 0);
+
+            buf
+        };
+
+        let write_three = &[vk::DescriptorBufferInfo::default()
+            .buffer(uniform_buf.buffer)
+            .range(uniform_buf.size)
+            .offset(0)];
+
+        let write_desc_sets = [vk::WriteDescriptorSet::default()
+            .dst_set(descriptor_sets[0])
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .buffer_info(write_three)];
 
         base.device.update_descriptor_sets(&write_desc_sets, &[]);
-        let layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&desc_set_layouts);
 
         let pipeline_layout = base
             .device
-            .create_pipeline_layout(&layout_create_info, None)
+            .create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default().set_layouts(&desc_set_layouts),
+                None,
+            )
+            .unwrap();
+
+        let shaders = base
+            .shader_object
+            .create_shaders(
+                &[
+                    ShaderCreateInfoEXT::default()
+                        .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+                        .code(vert_spirv)
+                        .code_type(ShaderCodeTypeEXT::SPIRV)
+                        .stage(ShaderStageFlags::VERTEX)
+                        .set_layouts(&desc_set_layouts),
+                    ShaderCreateInfoEXT::default()
+                        .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+                        .code(frag_spirv)
+                        .code_type(ShaderCodeTypeEXT::SPIRV)
+                        .stage(ShaderStageFlags::FRAGMENT)
+                        .set_layouts(&desc_set_layouts), // .push_constant_ranges(&[vk::PushConstantRange::default()
+                                                         //     .stage_flags(ShaderStageFlags::VERTEX)
+                                                         //     .size(mem::size_of::<PushConstants>() as u32)
+                                                         //     .offset(0)]),
+                ],
+                None,
+            )
             .unwrap();
 
         base.render_loop(|| {
-            comp_pass.run(&base);
+            // comp_pass.run(&base);
 
             let present_index = base
                 .swapchain_loader
@@ -293,7 +373,7 @@ fn main() {
 
                     let color_attach = &[vk::RenderingAttachmentInfo::default()
                         .image_view(base.present_image_views[present_index as usize])
-                        .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
                         .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue {
@@ -304,9 +384,9 @@ fn main() {
 
                     let depth_attach = &vk::RenderingAttachmentInfo::default()
                         .image_view(base.depth_image_view)
-                        .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
+                        .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                         .load_op(vk::AttachmentLoadOp::CLEAR)
-                        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                        .store_op(vk::AttachmentStoreOp::STORE)
                         .clear_value(vk::ClearValue {
                             depth_stencil: vk::ClearDepthStencilValue {
                                 depth: 1.0,
@@ -321,6 +401,14 @@ fn main() {
                         .depth_attachment(depth_attach);
 
                     device.cmd_begin_rendering(draw_command_buffer, &render_pass_begin_info);
+                    device.cmd_bind_descriptor_sets(
+                        draw_command_buffer,
+                        PipelineBindPoint::GRAPHICS,
+                        pipeline_layout,
+                        0,
+                        &descriptor_sets,
+                        &[],
+                    );
 
                     base.shader_object
                         .cmd_set_viewport_with_count(draw_command_buffer, &viewports);
@@ -352,14 +440,6 @@ fn main() {
                         &[ShaderStageFlags::VERTEX, ShaderStageFlags::FRAGMENT],
                         &shaders,
                     );
-
-                    // device.cmd_push_constants(
-                    //     draw_command_buffer,
-                    //     PipelineLayout::default(),
-                    //     ShaderStageFlags::VERTEX,
-                    //     0,
-                    //     bytemuck::bytes_of(&device_address),
-                    // );
 
                     device.cmd_bind_vertex_buffers(
                         draw_command_buffer,
@@ -418,7 +498,7 @@ fn main() {
             base.shader_object.destroy_shader(*shader, None);
         }
 
-        output_tex.destroy(&base.device, &mut base.allocator);
+        // output_tex.destroy(&base.device, &mut base.allocator);
         index_buffer.destroy(&base.device, &mut base.allocator);
         vertex_buffer.destroy(&base.device, &mut base.allocator);
     }

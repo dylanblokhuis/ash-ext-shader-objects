@@ -1,10 +1,12 @@
 use ash::{
     extensions::{
-        ext::{DebugUtils, ExtendedDynamicState, ShaderObject},
+        ext::{DebugUtils, DescriptorBuffer, ExtendedDynamicState, ShaderObject},
         khr::{Surface, Swapchain},
     },
     vk::{
-        ExtVertexInputDynamicStateFn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
+        ExtDescriptorIndexingFn, ExtVertexInputDynamicStateFn, KhrGetMemoryRequirements2Fn,
+        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorBufferFeaturesEXT,
+        PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceDescriptorIndexingFeaturesEXT,
         PhysicalDeviceShaderObjectFeaturesEXT, PhysicalDeviceVertexInputDynamicStateFeaturesEXT,
         API_VERSION_1_3,
     },
@@ -142,6 +144,7 @@ pub struct ExampleBase {
     pub device: Device,
     pub allocator: Allocator,
     pub shader_object: ShaderObject,
+    pub descriptor_buffer: DescriptorBuffer,
     pub surface_loader: Surface,
     pub swapchain_loader: Swapchain,
     pub debug_utils_loader: DebugUtils,
@@ -293,6 +296,8 @@ impl ExampleBase {
                         .iter()
                         .enumerate()
                         .find_map(|(index, info)| {
+                            println!("{:?}", info);
+
                             let supports_graphic_and_surface =
                                 info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                                     && surface_loader
@@ -315,7 +320,10 @@ impl ExampleBase {
                 Swapchain::NAME.as_ptr(),
                 ShaderObject::NAME.as_ptr(),
                 ExtendedDynamicState::NAME.as_ptr(),
+                DescriptorBuffer::NAME.as_ptr(),
                 ExtVertexInputDynamicStateFn::NAME.as_ptr(),
+                ExtDescriptorIndexingFn::NAME.as_ptr(),
+                KhrGetMemoryRequirements2Fn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 KhrPortabilitySubsetFn::NAME.as_ptr(),
             ];
@@ -329,13 +337,29 @@ impl ExampleBase {
                     .dynamic_rendering(true)
                     .synchronization2(true);
 
-            let mut more_features = PhysicalDeviceVertexInputDynamicStateFeaturesEXT::default()
-                .vertex_input_dynamic_state(true);
-            let mut more_features2 =
+            let mut vertex_dynamic_state_features =
+                PhysicalDeviceVertexInputDynamicStateFeaturesEXT::default()
+                    .vertex_input_dynamic_state(true);
+            let mut shader_object_features =
                 PhysicalDeviceShaderObjectFeaturesEXT::default().shader_object(true);
 
+            let mut descriptor_features =
+                PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
             let mut buffer_features =
                 PhysicalDeviceBufferDeviceAddressFeaturesKHR::default().buffer_device_address(true);
+
+            let mut indexing_features = PhysicalDeviceDescriptorIndexingFeatures::default()
+                .shader_sampled_image_array_non_uniform_indexing(true)
+                .shader_uniform_buffer_array_non_uniform_indexing(true)
+                .shader_storage_buffer_array_non_uniform_indexing(true)
+                // after bind
+                .descriptor_binding_sampled_image_update_after_bind(true)
+                .descriptor_binding_uniform_buffer_update_after_bind(true)
+                .descriptor_binding_storage_buffer_update_after_bind(true)
+                // dynamic indexing
+                .shader_input_attachment_array_dynamic_indexing(true)
+                .shader_storage_texel_buffer_array_dynamic_indexing(true)
+                .shader_uniform_texel_buffer_array_dynamic_indexing(true);
 
             let queue_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family_index)
@@ -346,9 +370,11 @@ impl ExampleBase {
                 .enabled_extension_names(&device_extension_names_raw)
                 .enabled_features(&features)
                 .push_next(&mut physical_device_dynamic_rendering_features)
-                .push_next(&mut more_features)
-                .push_next(&mut more_features2)
-                .push_next(&mut buffer_features);
+                .push_next(&mut vertex_dynamic_state_features)
+                .push_next(&mut shader_object_features)
+                .push_next(&mut buffer_features)
+                .push_next(&mut descriptor_features)
+                .push_next(&mut indexing_features);
 
             let device: Device = instance
                 .create_device(pdevice, &device_create_info, None)
@@ -566,6 +592,7 @@ impl ExampleBase {
             })
             .unwrap();
             let shader_object = ShaderObject::new(&instance, &device);
+            let descriptor_buffer = DescriptorBuffer::new(&instance, &device);
 
             ExampleBase {
                 event_loop: RefCell::new(event_loop),
@@ -573,6 +600,7 @@ impl ExampleBase {
                 instance,
                 allocator,
                 shader_object,
+                descriptor_buffer,
                 device,
                 queue_family_index,
                 pdevice,

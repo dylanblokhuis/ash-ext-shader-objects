@@ -11,6 +11,7 @@ pub struct Buffer {
     pub allocation: Option<Allocation>,
     pub size: u64,
     pub mapped_ptr: *mut u8,
+    pub device_addr: u64,
 }
 
 impl Buffer {
@@ -21,6 +22,14 @@ impl Buffer {
         location: MemoryLocation,
     ) -> Buffer {
         let size = buffer_info.size;
+        let buffer_info = &mut buffer_info.clone();
+
+        if !buffer_info
+            .usage
+            .contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS)
+        {
+            buffer_info.usage |= vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+        }
 
         let buffer = unsafe { device.create_buffer(buffer_info, None) }.unwrap();
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
@@ -35,10 +44,18 @@ impl Buffer {
             })
             .unwrap();
 
+        let device_addr: u64;
         unsafe {
             device
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .unwrap()
+                .unwrap();
+
+            device_addr = device.get_buffer_device_address(&vk::BufferDeviceAddressInfo {
+                buffer,
+                s_type: vk::StructureType::BUFFER_DEVICE_ADDRESS_INFO,
+                p_next: std::ptr::null(),
+                ..Default::default()
+            });
         };
 
         let mapped_ptr = if location == MemoryLocation::GpuOnly {
@@ -52,6 +69,7 @@ impl Buffer {
             allocation: Some(allocation),
             size,
             mapped_ptr,
+            device_addr,
         }
     }
 

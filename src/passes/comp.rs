@@ -1,9 +1,9 @@
 use std::ffi::CStr;
 
 use ash::vk::{
-    self, PipelineBindPoint, ShaderCodeTypeEXT, ShaderCreateInfoEXT, ShaderEXT, ShaderStageFlags,
+    self, DescriptorPoolSize, PipelineBindPoint, ShaderCodeTypeEXT, ShaderCreateInfoEXT, ShaderEXT,
+    ShaderStageFlags,
 };
-use hassle_rs::compile_hlsl;
 
 use crate::{buffer::Image, ctx::record_submit_commandbuffer, graph::RenderNode};
 
@@ -15,15 +15,23 @@ pub struct CompPass {
 
 impl CompPass {
     pub unsafe fn new(base: &mut crate::ctx::ExampleBase, texture: &mut Image) -> Self {
-        let comp_spirv = compile_hlsl(
-            "comp.hlsl",
-            &std::fs::read_to_string(r#"C:\Users\dylan\dev\someday\shader\comp.hlsl"#).unwrap(),
-            "main",
-            "cs_6_5",
-            &["-spirv"],
-            &[],
-        )
-        .unwrap();
+        let compiler = shaderc::Compiler::new().unwrap();
+        let mut options = shaderc::CompileOptions::new().unwrap();
+        options.set_target_env(
+            shaderc::TargetEnv::Vulkan,
+            shaderc::EnvVersion::Vulkan1_2 as u32,
+        );
+        options.add_macro_definition("EP", Some("main"));
+        let binding = compiler
+            .compile_into_spirv(
+                &std::fs::read_to_string(r#"C:\Users\dylan\dev\someday\shader\comp.glsl"#).unwrap(),
+                shaderc::ShaderKind::Compute,
+                "comp.glsl",
+                "main",
+                Some(&options),
+            )
+            .unwrap();
+        let comp_spirv = binding.as_binary_u8();
 
         let shaders = base
             .shader_object
@@ -37,13 +45,30 @@ impl CompPass {
             )
             .unwrap();
 
-        let descriptor_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_IMAGE,
-            descriptor_count: 1,
-        }];
+        let refl_info = rspirv_reflect::Reflection::new_from_spirv(&comp_spirv).unwrap();
+        let sets = refl_info.get_descriptor_sets().unwrap();
+
+        let sets_amount = sets.len() as u32;
+        let mut descriptor_sizes: Vec<DescriptorPoolSize> = vec![];
+        for (set_index, descriptors) in sets {
+            for (descriptor_index, descriptor) in descriptors {
+                if let Some(dps) = descriptor_sizes
+                    .iter_mut()
+                    .find(|x| x.ty.as_raw() == descriptor.ty.0 as i32)
+                {
+                    dps.descriptor_count += 1;
+                } else {
+                    descriptor_sizes.push(DescriptorPoolSize {
+                        ty: ash::vk::DescriptorType::from_raw(descriptor.ty.0 as i32),
+                        descriptor_count: 1,
+                    });
+                }
+            }
+        }
+
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&descriptor_sizes)
-            .max_sets(1);
+            .max_sets(sets_amount);
 
         let descriptor_pool = base
             .device
