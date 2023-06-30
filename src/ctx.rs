@@ -1,45 +1,27 @@
 use ash::{
     extensions::{
-        ext::{DebugUtils, DescriptorBuffer, ExtendedDynamicState, ShaderObject},
+        ext::{DebugUtils, ExtendedDynamicState, ShaderObject},
         khr::{Surface, Swapchain},
     },
     vk::{
-        ExtDescriptorIndexingFn, ExtVertexInputDynamicStateFn, KhrGetMemoryRequirements2Fn,
-        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorBufferFeaturesEXT,
-        PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceDescriptorIndexingFeaturesEXT,
-        PhysicalDeviceShaderObjectFeaturesEXT, PhysicalDeviceVertexInputDynamicStateFeaturesEXT,
-        API_VERSION_1_3,
+        ExtDescriptorIndexingFn, KhrGetMemoryRequirements2Fn,
+        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
+        PhysicalDeviceShaderObjectFeaturesEXT, API_VERSION_1_3,
     },
 };
 use ash::{vk, Entry};
 use ash::{Device, Instance};
+use bevy::window::PresentMode;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use std::borrow::Cow;
-use std::cell::RefCell;
 use std::default::Default;
 use std::ffi::CStr;
 use std::ops::Drop;
 use std::os::raw::c_char;
+use std::{borrow::Cow, collections::HashMap};
 
-use winit::{
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    platform::run_return::EventLoopExtRunReturn,
-    window::WindowBuilder,
-};
+use winit::window::Window;
 
-// Simple offset_of macro akin to C++ offsetof
-#[macro_export]
-macro_rules! offset_of {
-    ($base:path, $field:ident) => {{
-        #[allow(unused_unsafe)]
-        unsafe {
-            let b: $base = mem::zeroed();
-            std::ptr::addr_of!(b.$field) as isize - std::ptr::addr_of!(b) as isize
-        }
-    }};
-}
 /// Helper function for submitting command buffers. Immediately waits for the fence before the command buffer
 /// is executed. That way we can delay the waiting for the fences by 1 frame which is good for performance.
 /// Make sure to create the fence in a signaled state on the first use.
@@ -138,19 +120,24 @@ pub fn find_memorytype_index(
         .map(|(index, _memory_type)| index as _)
 }
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+pub struct SamplerDesc {
+    pub texel_filter: vk::Filter,
+    pub mipmap_mode: vk::SamplerMipmapMode,
+    pub address_modes: vk::SamplerAddressMode,
+}
+
 pub struct ExampleBase {
     pub entry: Entry,
     pub instance: Instance,
     pub device: Device,
-    pub allocator: Allocator,
     pub shader_object: ShaderObject,
-    pub descriptor_buffer: DescriptorBuffer,
     pub surface_loader: Surface,
     pub swapchain_loader: Swapchain,
     pub debug_utils_loader: DebugUtils,
     pub window: winit::window::Window,
-    pub event_loop: RefCell<EventLoop<()>>,
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
+    pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
 
     pub pdevice: vk::PhysicalDevice,
     pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -181,43 +168,8 @@ pub struct ExampleBase {
 }
 
 impl ExampleBase {
-    pub fn render_loop<F: Fn()>(&self, f: F) {
-        self.event_loop
-            .borrow_mut()
-            .run_return(|event, _, control_flow| {
-                *control_flow = ControlFlow::Poll;
-                match event {
-                    Event::WindowEvent {
-                        event:
-                            WindowEvent::CloseRequested
-                            | WindowEvent::KeyboardInput {
-                                input:
-                                    KeyboardInput {
-                                        state: ElementState::Pressed,
-                                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                                        ..
-                                    },
-                                ..
-                            },
-                        ..
-                    } => *control_flow = ControlFlow::Exit,
-                    Event::MainEventsCleared => f(),
-                    _ => (),
-                }
-            });
-    }
-
-    pub fn new(window_width: u32, window_height: u32) -> Self {
+    pub fn new(window: Window, present_mode: PresentMode) -> Self {
         unsafe {
-            let event_loop = EventLoop::new();
-            let window = WindowBuilder::new()
-                .with_title("Ash - Example")
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    f64::from(window_width),
-                    f64::from(window_height),
-                ))
-                .build(&event_loop)
-                .unwrap();
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");
 
@@ -243,12 +195,7 @@ impl ExampleBase {
                 .engine_version(0)
                 .api_version(API_VERSION_1_3);
 
-            let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
-                vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
-            } else {
-                vk::InstanceCreateFlags::default()
-            };
-
+            let create_flags = vk::InstanceCreateFlags::default();
             let create_info = vk::InstanceCreateInfo::default()
                 .application_info(&appinfo)
                 .enabled_layer_names(&layers_names_raw)
@@ -320,15 +267,12 @@ impl ExampleBase {
                 Swapchain::NAME.as_ptr(),
                 ShaderObject::NAME.as_ptr(),
                 ExtendedDynamicState::NAME.as_ptr(),
-                DescriptorBuffer::NAME.as_ptr(),
-                ExtVertexInputDynamicStateFn::NAME.as_ptr(),
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 KhrGetMemoryRequirements2Fn::NAME.as_ptr(),
-                #[cfg(any(target_os = "macos", target_os = "ios"))]
-                KhrPortabilitySubsetFn::NAME.as_ptr(),
             ];
             let features = vk::PhysicalDeviceFeatures {
                 shader_clip_distance: 1,
+                sampler_anisotropy: 1,
                 ..Default::default()
             };
             let priorities = [1.0];
@@ -337,18 +281,14 @@ impl ExampleBase {
                     .dynamic_rendering(true)
                     .synchronization2(true);
 
-            let mut vertex_dynamic_state_features =
-                PhysicalDeviceVertexInputDynamicStateFeaturesEXT::default()
-                    .vertex_input_dynamic_state(true);
             let mut shader_object_features =
                 PhysicalDeviceShaderObjectFeaturesEXT::default().shader_object(true);
 
-            let mut descriptor_features =
-                PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
             let mut buffer_features =
                 PhysicalDeviceBufferDeviceAddressFeaturesKHR::default().buffer_device_address(true);
 
             let mut indexing_features = PhysicalDeviceDescriptorIndexingFeatures::default()
+                .descriptor_binding_partially_bound(true)
                 .shader_sampled_image_array_non_uniform_indexing(true)
                 .shader_uniform_buffer_array_non_uniform_indexing(true)
                 .shader_storage_buffer_array_non_uniform_indexing(true)
@@ -370,10 +310,9 @@ impl ExampleBase {
                 .enabled_extension_names(&device_extension_names_raw)
                 .enabled_features(&features)
                 .push_next(&mut physical_device_dynamic_rendering_features)
-                .push_next(&mut vertex_dynamic_state_features)
+                // .push_next(&mut vertex_dynamic_state_features)
                 .push_next(&mut shader_object_features)
                 .push_next(&mut buffer_features)
-                .push_next(&mut descriptor_features)
                 .push_next(&mut indexing_features);
 
             let device: Device = instance
@@ -397,8 +336,8 @@ impl ExampleBase {
             }
             let surface_resolution = match surface_capabilities.current_extent.width {
                 std::u32::MAX => vk::Extent2D {
-                    width: window_width,
-                    height: window_height,
+                    width: window.inner_size().width,
+                    height: window.inner_size().height,
                 },
                 _ => surface_capabilities.current_extent,
             };
@@ -413,11 +352,15 @@ impl ExampleBase {
             let present_modes = surface_loader
                 .get_physical_device_surface_present_modes(pdevice, surface)
                 .unwrap();
-            let present_mode = present_modes
-                .iter()
-                .cloned()
-                .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-                .unwrap_or(vk::PresentModeKHR::FIFO);
+
+            let present_mode = match present_mode {
+                PresentMode::Fifo => vk::PresentModeKHR::FIFO,
+                PresentMode::Immediate => vk::PresentModeKHR::IMMEDIATE,
+                PresentMode::Mailbox => vk::PresentModeKHR::MAILBOX,
+                PresentMode::AutoNoVsync => vk::PresentModeKHR::IMMEDIATE,
+                PresentMode::AutoVsync => vk::PresentModeKHR::FIFO_RELAXED,
+            };
+            assert!(present_modes.contains(&present_mode));
             let swapchain_loader = Swapchain::new(&instance, &device);
 
             let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
@@ -582,30 +525,18 @@ impl ExampleBase {
                 .create_semaphore(&semaphore_create_info, None)
                 .unwrap();
 
-            let allocator = Allocator::new(&AllocatorCreateDesc {
-                instance: instance.clone(),
-                device: device.clone(),
-                physical_device: pdevice,
-                debug_settings: Default::default(),
-                buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
-                allocation_sizes: Default::default(),
-            })
-            .unwrap();
             let shader_object = ShaderObject::new(&instance, &device);
-            let descriptor_buffer = DescriptorBuffer::new(&instance, &device);
-
+            let immutable_samplers = Self::create_samplers(&device);
             ExampleBase {
-                event_loop: RefCell::new(event_loop),
                 entry,
                 instance,
-                allocator,
+                window,
                 shader_object,
-                descriptor_buffer,
                 device,
                 queue_family_index,
                 pdevice,
+                immutable_samplers,
                 device_memory_properties,
-                window,
                 surface_loader,
                 surface_format,
                 present_queue,
@@ -629,6 +560,61 @@ impl ExampleBase {
                 depth_image_memory,
             }
         }
+    }
+
+    fn create_samplers(device: &ash::Device) -> HashMap<SamplerDesc, vk::Sampler> {
+        let texel_filters = [vk::Filter::NEAREST, vk::Filter::LINEAR];
+        let mipmap_modes = [
+            vk::SamplerMipmapMode::NEAREST,
+            vk::SamplerMipmapMode::LINEAR,
+        ];
+        let address_modes = [
+            vk::SamplerAddressMode::REPEAT,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        ];
+
+        let mut result = HashMap::new();
+
+        for &texel_filter in &texel_filters {
+            for &mipmap_mode in &mipmap_modes {
+                for &address_modes in &address_modes {
+                    let anisotropy_enable = texel_filter == vk::Filter::LINEAR;
+
+                    result.insert(
+                        SamplerDesc {
+                            texel_filter,
+                            mipmap_mode,
+                            address_modes,
+                        },
+                        unsafe {
+                            device.create_sampler(
+                                &vk::SamplerCreateInfo::default()
+                                    .mag_filter(texel_filter)
+                                    .min_filter(texel_filter)
+                                    .mipmap_mode(mipmap_mode)
+                                    .address_mode_u(address_modes)
+                                    .address_mode_v(address_modes)
+                                    .address_mode_w(address_modes)
+                                    .max_lod(vk::LOD_CLAMP_NONE)
+                                    .max_anisotropy(16.0)
+                                    .anisotropy_enable(anisotropy_enable),
+                                None,
+                            )
+                        }
+                        .expect("create_sampler"),
+                    );
+                }
+            }
+        }
+
+        result
+    }
+
+    pub fn get_sampler(&self, desc: SamplerDesc) -> vk::Sampler {
+        *self
+            .immutable_samplers
+            .get(&desc)
+            .unwrap_or_else(|| panic!("Sampler not found: {:?}", desc))
     }
 }
 

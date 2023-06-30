@@ -10,7 +10,6 @@ pub struct Buffer {
     pub buffer: vk::Buffer,
     pub allocation: Option<Allocation>,
     pub size: u64,
-    pub mapped_ptr: *mut u8,
     pub device_addr: u64,
 }
 
@@ -58,17 +57,16 @@ impl Buffer {
             });
         };
 
-        let mapped_ptr = if location == MemoryLocation::GpuOnly {
-            std::ptr::null_mut()
-        } else {
-            allocation.mapped_ptr().unwrap().as_ptr() as *mut u8
-        };
+        // let mapped_ptr = if location == MemoryLocation::GpuOnly {
+        //     std::ptr::null_mut()
+        // } else {
+        //     allocation.mapped_ptr().unwrap().as_ptr() as *mut u8
+        // };
 
         Self {
             buffer,
             allocation: Some(allocation),
             size,
-            mapped_ptr,
             device_addr,
         }
     }
@@ -82,11 +80,14 @@ impl Buffer {
     where
         T: Copy,
     {
+        let Some(allocation) = self.allocation.as_ref() else {
+            panic!("Tried writing to buffer but buffer not allocated");
+        };
         //assert!(std::mem::size_of_val(slice) + offset <= self.info.get_size());
-        assert!(!self.mapped_ptr.is_null());
 
         unsafe {
-            let mem_ptr = self.mapped_ptr.add(offset);
+            let ptr = allocation.mapped_ptr().unwrap().as_ptr() as *mut u8;
+            let mem_ptr = ptr.add(offset);
             let mapped_slice = from_raw_parts_mut(mem_ptr as *mut T, slice.len());
             mapped_slice.copy_from_slice(slice);
         }
