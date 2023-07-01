@@ -122,6 +122,7 @@ impl From<Box> for Mesh {
                 position: p,
                 normal: n,
                 uv,
+                color: [1.0, 1.0, 1.0, 1.0],
                 ..Default::default()
             })
             .collect::<Vec<_>>();

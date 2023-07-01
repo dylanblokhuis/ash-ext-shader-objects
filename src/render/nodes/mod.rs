@@ -1,8 +1,10 @@
-use std::mem::size_of_val;
+use std::mem::size_of;
 
 use ash::vk::{
-    self, CompareOp, CullModeFlags, FrontFace, PipelineBindPoint, ShaderEXT, ShaderStageFlags,
+    self, CompareOp, CullModeFlags, DeviceSize, FrontFace, PipelineBindPoint, ShaderEXT,
+    ShaderStageFlags,
 };
+use bevy::prelude::{Mat4, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 
 use crate::{buffer::Buffer, ctx::record_submit_commandbuffer};
@@ -16,25 +18,25 @@ pub struct PresentNode {
     shaders: Vec<ShaderEXT>,
     descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
+    uniform: Buffer,
 }
 
 #[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
 #[repr(C, align(16))]
 struct Uniform {
-    buf_pointer: u64,
+    camera_pointer: u64,
     _pad: [f32; 2],
 }
 
-#[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C, align(16))]
-struct Misc {
-    color: [f32; 4],
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PushConstants {
+    model: Mat4,
 }
 
 impl PresentNode {
     pub fn new(render_instance: &RenderInstance, render_allocator: &mut RenderAllocator) -> Self {
         let renderer = &render_instance.0;
-        let allocator = &mut render_allocator.0;
         let vert = Shader::from_file(
             r#"C:\Users\dylan\dev\someday\shader\main.vert"#,
             super::shaders::ShaderKind::Vertex,
@@ -59,7 +61,8 @@ impl PresentNode {
                 .shader_object
                 .create_shaders(
                     &[
-                        vert.ext_shader_create_info(),
+                        vert.ext_shader_create_info()
+                            .set_layouts(&descriptor_set_layouts),
                         frag.ext_shader_create_info()
                             .set_layouts(&descriptor_set_layouts),
                     ],
@@ -68,101 +71,77 @@ impl PresentNode {
                 .unwrap()
         };
 
-        let misc_buf = {
-            let buf = Buffer::new(
-                &renderer.device,
-                allocator,
-                &vk::BufferCreateInfo::default()
-                    .size(std::mem::size_of::<Misc>() as u64)
-                    .usage(vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                MemoryLocation::CpuToGpu,
-            );
-
-            let colors = &[Misc {
-                color: [0.0, 1.0, 0.0, 1.0],
-            }];
-
-            println!("misc type size {:?}", std::mem::size_of::<Misc>() as u64);
-            println!("misc buf size {:?}", size_of_val(colors));
-
-            buf.copy_from_slice(colors, 0);
-
-            buf
-        };
-
-        let uniform_buf = {
-            let buf = Buffer::new(
-                &renderer.device,
-                &mut render_allocator.0,
-                &vk::BufferCreateInfo::default()
-                    .size(std::mem::size_of::<Uniform>() as u64)
-                    .usage(
-                        vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                            | vk::BufferUsageFlags::UNIFORM_BUFFER,
-                    )
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                MemoryLocation::CpuToGpu,
-            );
-
-            let uniform = Uniform {
-                buf_pointer: misc_buf.device_addr,
-                ..Default::default()
-            };
-
-            println!(
-                "uniform type size {:?}",
-                std::mem::size_of::<Uniform>() as u64
-            );
-            println!("uniform buf size {:?}", size_of_val(&[uniform]));
-
-            buf.copy_from_slice(&[uniform], 0);
-
-            buf
-        };
-
-        let uniform_buffer_descriptor = &[vk::DescriptorBufferInfo::default()
-            .buffer(uniform_buf.buffer)
-            .range(uniform_buf.size)
-            .offset(0)];
-
-        let write_desc_sets = [vk::WriteDescriptorSet::default()
-            .dst_set(descriptor_sets[0])
-            .dst_binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .buffer_info(uniform_buffer_descriptor)];
-
-        unsafe {
-            renderer
-                .device
-                .update_descriptor_sets(&write_desc_sets, &[]);
-        };
-
         let pipeline_layout = unsafe {
             renderer
                 .device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(&descriptor_set_layouts)
+                        .push_constant_ranges(&[vk::PushConstantRange::default()
+                            .stage_flags(ShaderStageFlags::ALL_GRAPHICS)
+                            .offset(0)
+                            .size(size_of::<PushConstants>() as u32)]),
                     None,
                 )
                 .unwrap()
         };
 
+        let uniform = Buffer::new(
+            render_instance.device(),
+            render_allocator.allocator(),
+            &vk::BufferCreateInfo::default()
+                .size(size_of::<Uniform>() as DeviceSize)
+                .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            MemoryLocation::CpuToGpu,
+        );
+
         Self {
             shaders,
             descriptor_sets,
             pipeline_layout,
+            uniform,
         }
     }
 }
 
 impl SequentialNode for PresentNode {
-    fn run(
-        &self,
-        render_instance: &super::RenderInstance,
-        world: &bevy::prelude::World,
-    ) -> anyhow::Result<()> {
+    fn update(&mut self, world: &mut bevy::prelude::World) {
         let assets = world.resource::<ProcessedRenderAssets>();
+        if assets.buffers.contains_key("camera") && !self.uniform.has_been_written_to {
+            println!("Updating uniform");
+            let camera = assets.buffers.get("camera").unwrap();
+            self.uniform.copy_from_slice(
+                &[Uniform {
+                    camera_pointer: camera.device_addr,
+                    ..Default::default()
+                }],
+                0,
+            );
+
+            let uniform_buffer_descriptor = &[vk::DescriptorBufferInfo::default()
+                .buffer(self.uniform.buffer)
+                .range(self.uniform.size)
+                .offset(0)];
+
+            let write_desc_sets = [vk::WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[0])
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(uniform_buffer_descriptor)];
+
+            unsafe {
+                world
+                    .resource::<RenderInstance>()
+                    .device()
+                    .update_descriptor_sets(&write_desc_sets, &[]);
+            };
+        }
+    }
+
+    fn run(&self, world: &bevy::prelude::World) -> anyhow::Result<()> {
+        let assets = world.resource::<ProcessedRenderAssets>();
+        let render_instance = world.resource::<RenderInstance>();
 
         let renderer = render_instance.0.as_ref();
         let present_index = unsafe {
@@ -292,6 +271,16 @@ impl SequentialNode for PresentNode {
                 );
 
                 for (_, mesh) in assets.meshes.iter() {
+                    device.cmd_push_constants(
+                        draw_command_buffer,
+                        self.pipeline_layout,
+                        vk::ShaderStageFlags::ALL_GRAPHICS,
+                        0,
+                        bytemuck::bytes_of(&PushConstants {
+                            model: mesh.model_matrix,
+                        }),
+                    );
+
                     renderer
                         .shader_object
                         .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
@@ -301,13 +290,17 @@ impl SequentialNode for PresentNode {
                         &[mesh.vertex_buffer.buffer],
                         &[0],
                     );
-                    device.cmd_bind_index_buffer(
-                        draw_command_buffer,
-                        mesh.index_buffer.buffer,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
-                    device.cmd_draw_indexed(draw_command_buffer, mesh.index_count, 1, 0, 0, 1);
+                    if let Some(index_buffer) = &mesh.index_buffer {
+                        device.cmd_bind_index_buffer(
+                            draw_command_buffer,
+                            index_buffer.buffer,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        device.cmd_draw_indexed(draw_command_buffer, mesh.index_count, 1, 0, 0, 1);
+                    } else {
+                        device.cmd_draw(draw_command_buffer, mesh.vertex_count, 1, 0, 1);
+                    }
                 }
 
                 device.cmd_end_rendering(draw_command_buffer);

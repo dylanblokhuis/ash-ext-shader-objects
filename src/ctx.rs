@@ -12,7 +12,6 @@ use ash::{
 use ash::{vk, Entry};
 use ash::{Device, Instance};
 use bevy::window::PresentMode;
-use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use std::default::Default;
 use std::ffi::CStr;
@@ -25,7 +24,6 @@ use winit::window::Window;
 /// Helper function for submitting command buffers. Immediately waits for the fence before the command buffer
 /// is executed. That way we can delay the waiting for the fences by 1 frame which is good for performance.
 /// Make sure to create the fence in a signaled state on the first use.
-#[allow(clippy::too_many_arguments)]
 pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
     device: &Device,
     command_buffer: vk::CommandBuffer,

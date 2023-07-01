@@ -35,7 +35,7 @@ use crate::{
     ctx::ExampleBase,
 };
 
-use self::{extract::Extract, mesh::Mesh, nodes::PresentNode};
+use self::{bundles::Camera, extract::Extract, mesh::Mesh, nodes::PresentNode};
 
 /// Contains the default Bevy rendering backend based on wgpu.
 #[derive(Default)]
@@ -181,6 +181,11 @@ impl Plugin for RenderPlugin {
                     .in_schedule(ExtractSchedule)
                     .run_if(is_render_resources_setup),
             )
+            .add_system(
+                extract_camera_uniform
+                    .in_schedule(ExtractSchedule)
+                    .run_if(is_render_resources_setup),
+            )
             .add_system(basic_renderer_setup.run_if(is_render_resources_setup));
 
         let (sender, receiver) = create_time_channels();
@@ -249,10 +254,7 @@ pub trait SequentialNode: Send + Sync + 'static {
     /// Updates internal node state using the current render [`World`] prior to the run method.
     fn update(&mut self, _world: &mut World) {}
 
-    /// Runs the graph node logic, issues draw calls, updates the output slots and
-    /// optionally queues up subgraphs for execution. The graph data, input and output values are
-    /// passed via the [`RenderGraphContext`].
-    fn run(&self, render_instance: &RenderInstance, world: &World) -> anyhow::Result<()>;
+    fn run(&self, world: &World) -> anyhow::Result<()>;
 }
 
 struct SequentialPass {
@@ -285,9 +287,8 @@ impl SequentialPassSystem {
     }
 
     pub fn run(&mut self, world: &World) {
-        let renderer = world.resource::<RenderInstance>();
         for pass in self.passes.iter_mut() {
-            pass.node.run(renderer, world).unwrap();
+            pass.node.run(world).unwrap();
         }
     }
 }
@@ -312,6 +313,11 @@ impl RenderInstance {
 
 #[derive(Resource)]
 pub struct RenderAllocator(Allocator);
+impl RenderAllocator {
+    pub fn allocator(&mut self) -> &mut Allocator {
+        &mut self.0
+    }
+}
 
 fn extract_render_instance(
     mut commands: Commands,
@@ -354,9 +360,11 @@ fn is_render_resources_setup(setup: Res<RenderResourcesSetup>) -> bool {
 
 struct GpuMesh {
     vertex_buffer: Buffer,
-    index_buffer: Buffer,
+    index_buffer: Option<Buffer>,
+    vertex_count: u32,
     index_count: u32,
     topology: PrimitiveTopology,
+    model_matrix: Mat4,
 }
 
 impl GpuMesh {
@@ -402,22 +410,23 @@ impl GpuMesh {
 #[derive(Resource, Default)]
 struct ProcessedRenderAssets {
     meshes: HashMap<Handle<Mesh>, GpuMesh>,
+    buffers: HashMap<&'static str, Buffer>,
 }
 
 fn extract_meshes(
-    meshes: Extract<Query<&Handle<Mesh>>>,
+    objects_with_mesh: Extract<Query<(&Handle<Mesh>, &Transform)>>,
     mesh_assets: Extract<Res<Assets<Mesh>>>,
     render_instance: Res<RenderInstance>,
     mut render_allocator: ResMut<RenderAllocator>,
     mut processed_assets: ResMut<ProcessedRenderAssets>,
 ) {
-    for handle in meshes.iter() {
+    for (handle, transform) in objects_with_mesh.iter() {
         if processed_assets.meshes.contains_key(handle) {
             continue;
         }
         let mesh = mesh_assets.get(handle).unwrap();
         let vertex_buffer = {
-            let buf = Buffer::new(
+            let mut buf = Buffer::new(
                 &render_instance.0.device,
                 &mut render_allocator.0,
                 &vk::BufferCreateInfo {
@@ -433,8 +442,11 @@ fn extract_meshes(
             buf
         };
 
-        let (index_buffer, index_len) = {
-            let buf = Buffer::new(
+        let (index_buffer, index_len) = || -> (Option<Buffer>, u32) {
+            if mesh.indices.is_empty() {
+                return (None, 0);
+            }
+            let mut buf = Buffer::new(
                 &render_instance.0.device,
                 &mut render_allocator.0,
                 &vk::BufferCreateInfo::default()
@@ -445,16 +457,18 @@ fn extract_meshes(
             );
 
             buf.copy_from_slice(&mesh.indices, 0);
-            (buf, mesh.indices.len() as u32)
-        };
+            return (Some(buf), mesh.indices.len() as u32);
+        }();
 
         processed_assets.meshes.insert(
             handle.clone(),
             GpuMesh {
                 vertex_buffer,
                 index_buffer,
+                vertex_count: mesh.vertices.len() as u32,
                 index_count: index_len,
                 topology: mesh.primitive_topology,
+                model_matrix: transform.compute_matrix(),
             },
         );
     }
@@ -462,15 +476,14 @@ fn extract_meshes(
     // cleanup old meshes and delete gpu buffers
     let mut keys_to_delete = vec![];
     for (handle, gpu_mesh) in processed_assets.meshes.iter_mut() {
-        if !meshes.into_iter().any(|h| h == handle) {
-            println!("{:?}", "here");
-
+        if !objects_with_mesh.into_iter().any(|h| h.0 == handle) {
             gpu_mesh
                 .vertex_buffer
-                .destroy(&render_instance.0.device, &mut render_allocator.0);
-            gpu_mesh
-                .index_buffer
-                .destroy(&render_instance.0.device, &mut render_allocator.0);
+                .destroy(render_instance.device(), render_allocator.allocator());
+
+            if let Some(index_buffer) = &mut gpu_mesh.index_buffer {
+                index_buffer.destroy(render_instance.device(), render_allocator.allocator());
+            }
 
             keys_to_delete.push(handle.clone());
         }
@@ -478,6 +491,58 @@ fn extract_meshes(
 
     for i in keys_to_delete.iter().rev() {
         processed_assets.meshes.remove(i);
+    }
+}
+
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug)]
+struct CameraBuffer {
+    view_proj: Mat4,
+    inverse_view_proj: Mat4,
+    view: Mat4,
+    inverse_view: Mat4,
+    proj: Mat4,
+    inverse_proj: Mat4,
+    world_position: Vec3,
+}
+
+fn extract_camera_uniform(
+    camera: Extract<Query<(&Camera, &Transform)>>,
+    mut processed_assets: ResMut<ProcessedRenderAssets>,
+    render_instance: Res<RenderInstance>,
+    mut render_allocator: ResMut<RenderAllocator>,
+) {
+    let (camera, camera_transform) = camera.single();
+
+    let view = camera_transform.compute_matrix();
+    let inverse_view = view.inverse();
+    let projection = camera.projection;
+    let inverse_projection = projection.inverse();
+
+    let uniform = CameraBuffer {
+        view_proj: projection * inverse_view,
+        inverse_view_proj: view * inverse_projection,
+        view,
+        inverse_view,
+        proj: projection,
+        inverse_proj: inverse_projection,
+        world_position: camera_transform.translation,
+    };
+
+    if let Some(buffer) = processed_assets.buffers.get_mut("camera") {
+        buffer.copy_from_slice(&[uniform], 0);
+    } else {
+        let mut buffer: Buffer = Buffer::new(
+            render_instance.device(),
+            render_allocator.allocator(),
+            &vk::BufferCreateInfo::default()
+                .size(std::mem::size_of::<CameraBuffer>() as u64)
+                .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            MemoryLocation::CpuToGpu,
+        );
+        buffer.copy_from_slice(&[uniform], 0);
+        processed_assets.buffers.insert("camera", buffer);
     }
 }
 

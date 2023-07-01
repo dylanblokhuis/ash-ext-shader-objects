@@ -11,6 +11,7 @@ pub struct Buffer {
     pub allocation: Option<Allocation>,
     pub size: u64,
     pub device_addr: u64,
+    pub has_been_written_to: bool,
 }
 
 impl Buffer {
@@ -57,17 +58,12 @@ impl Buffer {
             });
         };
 
-        // let mapped_ptr = if location == MemoryLocation::GpuOnly {
-        //     std::ptr::null_mut()
-        // } else {
-        //     allocation.mapped_ptr().unwrap().as_ptr() as *mut u8
-        // };
-
         Self {
             buffer,
             allocation: Some(allocation),
             size,
             device_addr,
+            has_been_written_to: false,
         }
     }
 
@@ -76,7 +72,7 @@ impl Buffer {
         unsafe { device.destroy_buffer(self.buffer, None) };
     }
 
-    pub fn copy_from_slice<T>(&self, slice: &[T], offset: usize)
+    pub fn copy_from_slice<T>(&mut self, slice: &[T], offset: usize)
     where
         T: Copy,
     {
@@ -91,6 +87,7 @@ impl Buffer {
             let mapped_slice = from_raw_parts_mut(mem_ptr as *mut T, slice.len());
             mapped_slice.copy_from_slice(slice);
         }
+        self.has_been_written_to = true;
     }
 }
 

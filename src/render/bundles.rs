@@ -13,3 +13,14 @@ pub struct MaterialMeshBundle {
     // /// Algorithmically-computed indication of whether an entity is visible and should be extracted for rendering
     // pub computed_visibility: ComputedVisibility,
 }
+
+#[derive(Component, Clone, Default)]
+pub struct Camera {
+    pub projection: Mat4,
+}
+
+#[derive(Bundle, Clone, Default)]
+pub struct CameraBundle {
+    pub camera: Camera,
+    pub transform: Transform,
+}

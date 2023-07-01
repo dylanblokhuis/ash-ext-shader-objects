@@ -91,7 +91,7 @@ impl Shader {
 
         let desc_alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
-            .set_layouts(&descriptor_set_layouts);
+            .set_layouts(descriptor_set_layouts);
         let descriptor_sets = unsafe {
             render_instance
                 .device()
