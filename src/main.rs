@@ -54,7 +54,7 @@ fn main() {
             primary_window: Some(Window {
                 resolution: (1280.0, 720.0).into(),
                 title: "Someday".to_string(),
-                present_mode: bevy::window::PresentMode::Mailbox,
+                present_mode: bevy::window::PresentMode::Fifo,
                 resizable: false,
                 mode: WindowMode::Windowed,
                 ..default()
