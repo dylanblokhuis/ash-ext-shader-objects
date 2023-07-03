@@ -1,16 +1,20 @@
-use std::mem::size_of;
+use std::{mem::size_of, sync::Arc, thread::ThreadId};
 
 use ash::vk::{
-    self, CompareOp, CullModeFlags, DeviceSize, FrontFace, PipelineBindPoint, ShaderEXT,
-    ShaderStageFlags,
+    self, CompareOp, CullModeFlags, DeviceSize, FrontFace, PipelineBindPoint, RenderingFlags,
+    SampleCountFlags, ShaderEXT, ShaderStageFlags,
 };
-use bevy::prelude::{Mat4, Vec3, Vec4};
+use bevy::prelude::*;
 use gpu_allocator::MemoryLocation;
 
-use crate::{buffer::Buffer, ctx::record_submit_commandbuffer};
+use crate::{
+    buffer::{Buffer, Image},
+    ctx::record_submit_commandbuffer,
+};
+use rayon::prelude::*;
 
 use super::{
-    shaders::Shader, GpuMesh, ProcessedRenderAssets, RenderAllocator, RenderInstance,
+    mesh::Mesh, shaders::Shader, GpuMesh, ProcessedRenderAssets, RenderAllocator, RenderInstance,
     SequentialNode,
 };
 
@@ -19,6 +23,7 @@ pub struct PresentNode {
     descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
     uniform: Buffer,
+    texture: Image,
 }
 
 #[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
@@ -96,11 +101,18 @@ impl PresentNode {
             MemoryLocation::CpuToGpu,
         );
 
+        let texture = Image::from_image_buffer(
+            render_instance,
+            render_allocator,
+            image::load_from_memory(include_bytes!("../../../images/public.png")).unwrap(),
+        );
+
         Self {
             shaders,
             descriptor_sets,
             pipeline_layout,
             uniform,
+            texture,
         }
     }
 }
@@ -124,11 +136,26 @@ impl SequentialNode for PresentNode {
                 .range(self.uniform.size)
                 .offset(0)];
 
-            let write_desc_sets = [vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[0])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(uniform_buffer_descriptor)];
+            let texture_binding = &[vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(
+                    self.texture
+                        .create_view(world.resource::<RenderInstance>().device()),
+                )
+                .sampler(world.resource::<RenderInstance>().0.get_default_sampler())];
+            let write_desc_sets = [
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[0])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(uniform_buffer_descriptor),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[0])
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .dst_array_element(0)
+                    .image_info(texture_binding),
+            ];
 
             unsafe {
                 world
@@ -140,7 +167,8 @@ impl SequentialNode for PresentNode {
     }
 
     fn run(&self, world: &bevy::prelude::World) -> anyhow::Result<()> {
-        let assets = world.resource::<ProcessedRenderAssets>();
+        let _ = info_span!("Run Present Node").entered();
+        let assets = Arc::new(world.resource::<ProcessedRenderAssets>());
         let render_instance = world.resource::<RenderInstance>();
 
         let renderer = render_instance.0.as_ref();
@@ -166,6 +194,7 @@ impl SequentialNode for PresentNode {
             &[renderer.present_complete_semaphore],
             &[renderer.rendering_complete_semaphore],
             |device, draw_command_buffer| unsafe {
+                let _ = info_span!("Run Primary Command buffer").entered();
                 {
                     let image_memory_barrier = vk::ImageMemoryBarrier2::default()
                         .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
@@ -212,6 +241,7 @@ impl SequentialNode for PresentNode {
                     });
 
                 let render_pass_begin_info = vk::RenderingInfo::default()
+                    .flags(RenderingFlags::CONTENTS_SECONDARY_COMMAND_BUFFERS)
                     .render_area(renderer.surface_resolution.into())
                     .layer_count(1)
                     .color_attachments(color_attach)
@@ -270,38 +300,184 @@ impl SequentialNode for PresentNode {
                     &self.shaders,
                 );
 
-                for (_, mesh) in assets.meshes.iter() {
-                    device.cmd_push_constants(
-                        draw_command_buffer,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::ALL_GRAPHICS,
-                        0,
-                        bytemuck::bytes_of(&PushConstants {
-                            model: mesh.model_matrix,
-                        }),
-                    );
+                // reset all secondary command buffers
+                renderer
+                    .threaded_command_buffers
+                    .read()
+                    .unwrap()
+                    .par_iter()
+                    .for_each(|(_, buffer)| {
+                        let formats = &[renderer.surface_format.format];
+                        let mut command_buffer_inheritance_info =
+                            vk::CommandBufferInheritanceRenderingInfo::default()
+                                .view_mask(0)
+                                .color_attachment_formats(formats)
+                                .depth_attachment_format(
+                                    vk::Format::D16_UNORM, // depth_attachment_format
+                                                           //     .map_or(vk::Format::UNDEFINED, Into::into),
+                                )
+                                // .stencil_attachment_format(
+                                //     stencil_attachment_format
+                                //         .map_or(vk::Format::UNDEFINED, Into::into),
+                                // )
+                                .rasterization_samples(SampleCountFlags::TYPE_1);
 
-                    renderer
-                        .shader_object
-                        .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
-                    device.cmd_bind_vertex_buffers(
-                        draw_command_buffer,
-                        0,
-                        &[mesh.vertex_buffer.buffer],
-                        &[0],
-                    );
-                    if let Some(index_buffer) = &mesh.index_buffer {
-                        device.cmd_bind_index_buffer(
-                            draw_command_buffer,
-                            index_buffer.buffer,
-                            0,
-                            vk::IndexType::UINT32,
-                        );
-                        device.cmd_draw_indexed(draw_command_buffer, mesh.index_count, 1, 0, 0, 1);
-                    } else {
-                        device.cmd_draw(draw_command_buffer, mesh.vertex_count, 1, 0, 1);
+                        let inheritence_info = vk::CommandBufferInheritanceInfo::default()
+                            .push_next(&mut command_buffer_inheritance_info);
+
+                        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
+                            .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+                            .inheritance_info(&inheritence_info);
+
+                        device
+                            .begin_command_buffer(*buffer, &command_buffer_begin_info)
+                            .expect("Begin commandbuffer");
+                    });
+
+                let chunk_amount = 100;
+                let chunked_handles: Vec<Vec<&Handle<Mesh>>> = assets
+                    .meshes
+                    .keys()
+                    .collect::<Vec<_>>()
+                    .chunks(chunk_amount)
+                    .map(|c| c.to_vec())
+                    .collect::<Vec<_>>();
+
+                let queue = crossbeam_queue::ArrayQueue::<ThreadId>::new(
+                    chunked_handles.len() * chunk_amount,
+                );
+
+                render_instance.0.command_thread_pool.scope(|scope| {
+                    let _ = info_span!("Generate all tasks for render commands in thread pool")
+                        .entered();
+
+                    for chunk in chunked_handles.iter() {
+                        scope.spawn(|_| {
+                            let _ = info_span!("Generating render commands in thread").entered();
+                            let thread_id = std::thread::current().id();
+
+                            let command_buffers = renderer.threaded_command_buffers.read().unwrap();
+                            let command_buffer = command_buffers.get(&thread_id).unwrap();
+                            let draw_command_buffer = *command_buffer;
+
+                            for handle in chunk.iter() {
+                                let mesh = &assets.meshes.get(handle).unwrap();
+                                device.cmd_push_constants(
+                                    draw_command_buffer,
+                                    self.pipeline_layout,
+                                    vk::ShaderStageFlags::ALL_GRAPHICS,
+                                    0,
+                                    bytemuck::bytes_of(&PushConstants {
+                                        model: mesh.model_matrix,
+                                    }),
+                                );
+
+                                renderer
+                                    .shader_object
+                                    .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
+
+                                device.cmd_bind_vertex_buffers(
+                                    draw_command_buffer,
+                                    0,
+                                    &[mesh.vertex_buffer.buffer],
+                                    &[0],
+                                );
+                                if let Some(index_buffer) = &mesh.index_buffer {
+                                    device.cmd_bind_index_buffer(
+                                        draw_command_buffer,
+                                        index_buffer.buffer,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    device.cmd_draw_indexed(
+                                        draw_command_buffer,
+                                        mesh.index_count,
+                                        1,
+                                        0,
+                                        0,
+                                        1,
+                                    );
+                                } else {
+                                    device.cmd_draw(
+                                        draw_command_buffer,
+                                        mesh.vertex_count,
+                                        1,
+                                        0,
+                                        1,
+                                    );
+                                }
+                            }
+
+                            queue.push(thread_id).unwrap();
+                        });
                     }
-                }
+                });
+
+                renderer
+                    .threaded_command_buffers
+                    .read()
+                    .unwrap()
+                    .par_iter()
+                    .for_each(|(_, buffer)| {
+                        device
+                            .end_command_buffer(*buffer)
+                            .expect("Begin commandbuffer");
+                    });
+
+                let queue = queue.into_iter().collect::<Vec<_>>();
+
+                let secondary_command_buffers = renderer
+                    .threaded_command_buffers
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .filter(|(thread_id, _)| {
+                        queue.contains(thread_id)
+                        // threads_with_recorded_commands
+                        //     .read()
+                        //     .unwrap()
+                        //     .contains(thread_id)
+                    })
+                    .map(|(_, buffer)| *buffer)
+                    .collect::<Vec<_>>();
+
+                renderer
+                    .device
+                    .cmd_execute_commands(draw_command_buffer, &secondary_command_buffers);
+
+                // for (_, mesh) in assets.meshes.iter() {
+                //     device.cmd_push_constants(
+                //         draw_command_buffer,
+                //         self.pipeline_layout,
+                //         vk::ShaderStageFlags::ALL_GRAPHICS,
+                //         0,
+                //         bytemuck::bytes_of(&PushConstants {
+                //             model: mesh.model_matrix,
+                //         }),
+                //     );
+
+                //     renderer
+                //         .shader_object
+                //         .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
+
+                //     device.cmd_bind_vertex_buffers(
+                //         draw_command_buffer,
+                //         0,
+                //         &[mesh.vertex_buffer.buffer],
+                //         &[0],
+                //     );
+                //     if let Some(index_buffer) = &mesh.index_buffer {
+                //         device.cmd_bind_index_buffer(
+                //             draw_command_buffer,
+                //             index_buffer.buffer,
+                //             0,
+                //             vk::IndexType::UINT32,
+                //         );
+                //         device.cmd_draw_indexed(draw_command_buffer, mesh.index_count, 1, 0, 0, 1);
+                //     } else {
+                //         device.cmd_draw(draw_command_buffer, mesh.vertex_count, 1, 0, 1);
+                //     }
+                // }
 
                 device.cmd_end_rendering(draw_command_buffer);
                 {

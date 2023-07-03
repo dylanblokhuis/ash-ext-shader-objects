@@ -29,6 +29,7 @@ layout (location = 3) in vec3 tangent;
 layout (location = 4) in vec4 color;
 
 layout (location = 0) out vec4 o_color;
+layout (location = 1) out vec2 o_uv;
 
 void main() {
     // Transform the vertex position from model to clip space.
@@ -39,4 +40,5 @@ void main() {
     // The clip space position is then assigned to gl_Position, a built-in output variable.
     gl_Position = world_to_clip;
     o_color = color;
+    o_uv = uv;
 }

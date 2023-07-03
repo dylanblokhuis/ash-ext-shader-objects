@@ -1,6 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
-use ash::vk::PrimitiveTopology;
 use bevy::app::PluginGroupBuilder;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::diagnostic::LogDiagnosticsPlugin;
@@ -15,7 +14,6 @@ use render::bundles::Camera;
 use render::bundles::CameraBundle;
 use render::bundles::MaterialMeshBundle;
 use render::mesh::Mesh;
-use render::mesh::Vertex;
 use render::primitives;
 use render::primitives::Box;
 use render::RenderPlugin;
@@ -41,6 +39,15 @@ impl PluginGroup for PluginBundle {
 }
 
 fn main() {
+    #[cfg(feature = "tracy")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+        )
+        .expect("set up the subscriber");
+    }
+
     App::new()
         .insert_resource(VulkanSettings::default())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -65,8 +72,9 @@ fn main() {
 }
 
 fn spawn_stuff(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
-    for x in 0..40 {
-        for y in 0..40 {
+    let _ = info_span!("Spawning objects");
+    for x in 0..200 {
+        for y in 0..200 {
             commands.spawn(MaterialMeshBundle {
                 mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
                 transform: Transform::from_translation(Vec3::new(

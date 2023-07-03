@@ -1,25 +1,82 @@
 use ash::{
     extensions::{
-        ext::{DebugUtils, ExtendedDynamicState, ShaderObject},
+        ext::{DebugUtils, ShaderObject},
         khr::{Surface, Swapchain},
     },
     vk::{
-        ExtDescriptorIndexingFn, KhrGetMemoryRequirements2Fn,
-        PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
-        PhysicalDeviceShaderObjectFeaturesEXT, API_VERSION_1_3,
+        BufferImageCopy, CommandBuffer, ExtDescriptorIndexingFn, ImageLayout,
+        KhrGetMemoryRequirements2Fn, PhysicalDeviceBufferDeviceAddressFeaturesKHR,
+        PhysicalDeviceDescriptorIndexingFeatures, PhysicalDeviceShaderObjectFeaturesEXT,
+        API_VERSION_1_3,
     },
 };
 use ash::{vk, Entry};
 use ash::{Device, Instance};
 use bevy::window::PresentMode;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use std::default::Default;
+use rayon::ThreadPool;
 use std::ffi::CStr;
-use std::ops::Drop;
-use std::os::raw::c_char;
 use std::{borrow::Cow, collections::HashMap};
+use std::{default::Default, thread::ThreadId};
+use std::{ops::Drop, sync::RwLock};
+use std::{os::raw::c_char, sync::Arc};
 
 use winit::window::Window;
+
+use crate::buffer::{Buffer, Image};
+
+// /// Helper function for submitting command buffers. Immediately waits for the fence before the command buffer
+// /// is executed. That way we can delay the waiting for the fences by 1 frame which is good for performance.
+// /// Make sure to create the fence in a signaled state on the first use.
+// pub fn record_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
+//     device: &Device,
+//     command_buffer: vk::CommandBuffer,
+//     fence: vk::Fence,
+//     color_attachment_formats: &[vk::Format],
+//     depth_attachment_format: Option<vk::Format>,
+//     stencil_attachment_format: Option<vk::Format>,
+//     f: F,
+// ) {
+//     unsafe {
+//         // device
+//         //     .reset_command_buffer(
+//         //         command_buffer,
+//         //         vk::CommandBufferResetFlags::RELEASE_RESOURCES,
+//         //     )
+//         //     .expect("Reset command buffer failed.");
+//         // device
+//         //     .wait_for_fences(&[fence], true, std::u64::MAX)
+//         //     .expect("Wait for fence failed.");
+
+//         // device.reset_fences(&[fence]).expect("Reset fences failed.");
+
+//         let mut command_buffer_inheritance_info =
+//             vk::CommandBufferInheritanceRenderingInfo::default()
+//                 .view_mask(0)
+//                 .color_attachment_formats(color_attachment_formats)
+//                 .depth_attachment_format(
+//                     depth_attachment_format.map_or(vk::Format::UNDEFINED, Into::into),
+//                 )
+//                 .stencil_attachment_format(
+//                     stencil_attachment_format.map_or(vk::Format::UNDEFINED, Into::into),
+//                 )
+//                 .rasterization_samples(SampleCountFlags::TYPE_1);
+
+//         let inheritence_info = vk::CommandBufferInheritanceInfo::default()
+//             .push_next(&mut command_buffer_inheritance_info);
+
+//         let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
+//             .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+//             .inheritance_info(&inheritence_info);
+//         device
+//             .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+//             .expect("Begin commandbuffer");
+//         f(device, command_buffer);
+//         device
+//             .end_command_buffer(command_buffer)
+//             .expect("End commandbuffer");
+//     }
+// }
 
 /// Helper function for submitting command buffers. Immediately waits for the fence before the command buffer
 /// is executed. That way we can delay the waiting for the fences by 1 frame which is good for performance.
@@ -72,6 +129,7 @@ pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
         device
             .queue_submit(submit_queue, &[submit_info], command_buffer_reuse_fence)
             .expect("queue submit failed.");
+        device.queue_wait_idle(submit_queue).unwrap();
     }
 }
 
@@ -136,6 +194,9 @@ pub struct ExampleBase {
     pub window: winit::window::Window,
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
     pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
+    pub max_descriptor_count: u32,
+    pub command_thread_pool: ThreadPool,
+    pub threaded_command_buffers: Arc<RwLock<HashMap<ThreadId, CommandBuffer>>>,
 
     pub pdevice: vk::PhysicalDevice,
     pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -172,7 +233,7 @@ impl ExampleBase {
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");
 
             let layer_names = [
-                CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0"),
+                // CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0"),
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_shader_object\0"),
             ];
             let layers_names_raw: Vec<*const c_char> = layer_names
@@ -264,7 +325,6 @@ impl ExampleBase {
             let device_extension_names_raw = [
                 Swapchain::NAME.as_ptr(),
                 ShaderObject::NAME.as_ptr(),
-                ExtendedDynamicState::NAME.as_ptr(),
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 KhrGetMemoryRequirements2Fn::NAME.as_ptr(),
             ];
@@ -287,6 +347,7 @@ impl ExampleBase {
 
             let mut indexing_features = PhysicalDeviceDescriptorIndexingFeatures::default()
                 .descriptor_binding_partially_bound(true)
+                .runtime_descriptor_array(true)
                 .shader_sampled_image_array_non_uniform_indexing(true)
                 .shader_uniform_buffer_array_non_uniform_indexing(true)
                 .shader_storage_buffer_array_non_uniform_indexing(true)
@@ -525,6 +586,9 @@ impl ExampleBase {
 
             let shader_object = ShaderObject::new(&instance, &device);
             let immutable_samplers = Self::create_samplers(&device);
+            let (command_thread_pool, threaded_command_buffers) =
+                Self::create_command_thread_pool(device.clone(), queue_family_index);
+
             ExampleBase {
                 entry,
                 instance,
@@ -534,6 +598,10 @@ impl ExampleBase {
                 queue_family_index,
                 pdevice,
                 immutable_samplers,
+                command_thread_pool,
+                threaded_command_buffers,
+                // TODO: fetch from device
+                max_descriptor_count: 1024,
                 device_memory_properties,
                 surface_loader,
                 surface_format,
@@ -608,11 +676,125 @@ impl ExampleBase {
         result
     }
 
+    pub fn create_command_thread_pool(
+        device: Device,
+        queue_family_index: u32,
+    ) -> (ThreadPool, Arc<RwLock<HashMap<ThreadId, CommandBuffer>>>) {
+        let m_command_buffers: Arc<RwLock<HashMap<ThreadId, CommandBuffer>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let m_command_buffers_clone = m_command_buffers.clone();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|x| format!("Command buffer generation thread {}", x))
+            .start_handler(move |x| {
+                println!("Starting thread {}", x);
+                let pool_create_info = vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                    .queue_family_index(queue_family_index);
+
+                let pool = unsafe { device.create_command_pool(&pool_create_info, None).unwrap() };
+
+                let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+                    .command_buffer_count(1)
+                    .command_pool(pool)
+                    .level(vk::CommandBufferLevel::SECONDARY);
+
+                let command_buffers = unsafe {
+                    device
+                        .allocate_command_buffers(&command_buffer_allocate_info)
+                        .unwrap()
+                };
+
+                m_command_buffers
+                    .write()
+                    .unwrap()
+                    .insert(std::thread::current().id(), command_buffers[0]);
+            })
+            .build()
+            .unwrap();
+
+        (pool, m_command_buffers_clone)
+    }
+
     pub fn get_sampler(&self, desc: SamplerDesc) -> vk::Sampler {
         *self
             .immutable_samplers
             .get(&desc)
             .unwrap_or_else(|| panic!("Sampler not found: {:?}", desc))
+    }
+
+    pub fn get_default_sampler(&self) -> vk::Sampler {
+        self.get_sampler(SamplerDesc {
+            texel_filter: vk::Filter::LINEAR,
+            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+            address_modes: vk::SamplerAddressMode::REPEAT,
+        })
+    }
+
+    pub fn copy_buffer_to_texture(&self, buffer: &Buffer, texture: &Image) {
+        unsafe {
+            record_submit_commandbuffer(
+                &self.device,
+                self.setup_command_buffer,
+                self.setup_commands_reuse_fence,
+                self.present_queue,
+                &[],
+                &[],
+                &[],
+                |device, setup_command_buffer| {
+                    {
+                        let image_memory_barrier = vk::ImageMemoryBarrier2::default()
+                            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                            .src_access_mask(vk::AccessFlags2::empty())
+                            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .image(texture.image)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                layer_count: 1,
+                                level_count: 1,
+                                ..Default::default()
+                            });
+
+                        let dependency_info = vk::DependencyInfo::default()
+                            .image_memory_barriers(std::slice::from_ref(&image_memory_barrier));
+
+                        device.cmd_pipeline_barrier2(setup_command_buffer, &dependency_info);
+                    }
+
+                    // println!(
+                    //     "{:?} {:?} {:?}",
+                    //     buffer.size,
+                    //     texture.extent.width * texture.bytes_per_texel(),
+                    //     texture.extent.width
+                    // );
+
+                    device.cmd_copy_buffer_to_image(
+                        setup_command_buffer,
+                        buffer.buffer,
+                        texture.image,
+                        ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &[BufferImageCopy::default()
+                            .buffer_offset(0)
+                            .buffer_row_length(texture.extent.width)
+                            .buffer_image_height(0)
+                            .image_subresource(vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                mip_level: 0,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .image_extent(texture.extent)],
+                    );
+
+                    // {
+
+                    // }
+                },
+            );
+        }
     }
 }
 

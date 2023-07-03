@@ -4,6 +4,7 @@ use std::{
 };
 
 use ash::vk::{self, SamplerCreateInfo, ShaderCodeTypeEXT, ShaderCreateInfoEXT};
+use rspirv_reflect::BindingCount;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc};
 
@@ -142,16 +143,34 @@ impl Shader {
                 let mut set_layout_create_flags = vk::DescriptorSetLayoutCreateFlags::empty();
 
                 for (binding_index, binding) in set.iter() {
+                    if binding.binding_count == BindingCount::Unbounded {
+                        binding_flags[bindings.len()] =
+                            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                                | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING
+                                | vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                                | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
+
+                        set_layout_create_flags |=
+                            vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL;
+                    }
+
+                    let descriptor_count: u32 = match binding.binding_count {
+                        BindingCount::One => 1,
+                        BindingCount::StaticSized(size) => size.try_into().unwrap(),
+                        BindingCount::Unbounded => render_instance.0.max_descriptor_count,
+                    };
+
                     match binding.ty {
                         rspirv_reflect::DescriptorType::UNIFORM_BUFFER
                         | rspirv_reflect::DescriptorType::UNIFORM_TEXEL_BUFFER
                         | rspirv_reflect::DescriptorType::STORAGE_IMAGE
                         | rspirv_reflect::DescriptorType::STORAGE_BUFFER
-                        | rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC => bindings.push(
+                        | rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC
+                        | rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER
+                        | rspirv_reflect::DescriptorType::SAMPLED_IMAGE => bindings.push(
                             vk::DescriptorSetLayoutBinding::default()
                                 .binding(*binding_index)
-                                //.descriptor_count(binding.count)
-                                .descriptor_count(1) // TODO
+                                .descriptor_count(descriptor_count) // TODO
                                 .descriptor_type(match binding.ty {
                                     rspirv_reflect::DescriptorType::UNIFORM_BUFFER => {
                                         vk::DescriptorType::UNIFORM_BUFFER
@@ -175,43 +194,17 @@ impl Shader {
                                     rspirv_reflect::DescriptorType::STORAGE_BUFFER_DYNAMIC => {
                                         vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
                                     }
+                                    rspirv_reflect::DescriptorType::COMBINED_IMAGE_SAMPLER => {
+                                        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                                    }
+                                    rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
+                                        vk::DescriptorType::SAMPLED_IMAGE
+                                    }
                                     _ => unimplemented!("{:?}", binding),
                                 })
                                 .stage_flags(stage_flags),
                         ),
-                        rspirv_reflect::DescriptorType::SAMPLED_IMAGE => {
-                            // if matches!(
-                            //     binding.dimensionality,
-                            //     rspirv_reflect::DescriptorDimensionality::RuntimeArray
-                            // ) {
-                            //     // Bindless
 
-                            //     binding_flags[bindings.len()] =
-                            //         vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-                            //             | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING
-                            //             | vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                            //             | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
-
-                            //     set_layout_create_flags |=
-                            //         vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL;
-                            // }
-
-                            // let descriptor_count = match binding.ty {
-                            //     rspirv_reflect::DescriptorType::Single => 1,
-                            //     rspirv_reflect::DescriptorDimensionality::Array(size) => size,
-                            //     rspirv_reflect::DescriptorDimensionality::RuntimeArray => {
-                            //         device.max_bindless_descriptor_count()
-                            //     }
-                            // };
-
-                            bindings.push(
-                                vk::DescriptorSetLayoutBinding::default()
-                                    .binding(*binding_index)
-                                    .descriptor_count(1) // TODO
-                                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                                    .stage_flags(stage_flags),
-                            );
-                        }
                         rspirv_reflect::DescriptorType::SAMPLER => {
                             let name_prefix = "sampler_";
                             if let Some(mut spec) = binding.name.strip_prefix(name_prefix) {
@@ -240,7 +233,7 @@ impl Shader {
                                 let renderer = &render_instance.0;
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
-                                        .descriptor_count(1)
+                                        .descriptor_count(descriptor_count)
                                         .descriptor_type(vk::DescriptorType::SAMPLER)
                                         .stage_flags(stage_flags)
                                         .binding(*binding_index)
@@ -260,7 +253,7 @@ impl Shader {
                             .push(
                                 vk::DescriptorSetLayoutBinding::default()
                                     .binding(*binding_index)
-                                    .descriptor_count(1) // TODO
+                                    .descriptor_count(descriptor_count) // TODO
                                     .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                                     .stage_flags(stage_flags),
                             ),

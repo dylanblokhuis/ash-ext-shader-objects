@@ -1,11 +1,15 @@
 pub mod bundles;
 pub mod extract;
+pub mod gltf;
+pub mod image;
+pub mod material;
 pub mod mesh;
 pub mod nodes;
 pub mod primitives;
 pub mod shaders;
 
 use std::{
+    collections::HashMap,
     mem::size_of,
     ops::{Deref, DerefMut},
     sync::Arc,
@@ -20,7 +24,6 @@ use bevy::{
     ecs::{event::ManualEventReader, schedule::ScheduleLabel},
     prelude::*,
     time::create_time_channels,
-    utils::HashMap,
     window::{PrimaryWindow, RawHandleWrapper},
 };
 use bytemuck::offset_of;
@@ -358,6 +361,7 @@ fn is_render_resources_setup(setup: Res<RenderResourcesSetup>) -> bool {
     setup.0
 }
 
+#[derive(Debug)]
 struct GpuMesh {
     vertex_buffer: Buffer,
     index_buffer: Option<Buffer>,
@@ -420,6 +424,11 @@ fn extract_meshes(
     mut render_allocator: ResMut<RenderAllocator>,
     mut processed_assets: ResMut<ProcessedRenderAssets>,
 ) {
+    let _ = info_span!("Extract meshes");
+    if processed_assets.meshes.len() == mesh_assets.len() {
+        return;
+    }
+
     for (handle, transform) in objects_with_mesh.iter() {
         if processed_assets.meshes.contains_key(handle) {
             continue;
@@ -474,24 +483,24 @@ fn extract_meshes(
     }
 
     // cleanup old meshes and delete gpu buffers
-    let mut keys_to_delete = vec![];
-    for (handle, gpu_mesh) in processed_assets.meshes.iter_mut() {
-        if !objects_with_mesh.into_iter().any(|h| h.0 == handle) {
-            gpu_mesh
-                .vertex_buffer
-                .destroy(render_instance.device(), render_allocator.allocator());
+    // let mut keys_to_delete = vec![];
+    // for (handle, gpu_mesh) in processed_assets.meshes.iter_mut() {
+    //     if !objects_with_mesh.into_iter().any(|h| h.0 == handle) {
+    //         gpu_mesh
+    //             .vertex_buffer
+    //             .destroy(render_instance.device(), render_allocator.allocator());
 
-            if let Some(index_buffer) = &mut gpu_mesh.index_buffer {
-                index_buffer.destroy(render_instance.device(), render_allocator.allocator());
-            }
+    //         if let Some(index_buffer) = &mut gpu_mesh.index_buffer {
+    //             index_buffer.destroy(render_instance.device(), render_allocator.allocator());
+    //         }
 
-            keys_to_delete.push(handle.clone());
-        }
-    }
+    //         keys_to_delete.push(handle.clone());
+    //     }
+    // }
 
-    for i in keys_to_delete.iter().rev() {
-        processed_assets.meshes.remove(i);
-    }
+    // for i in keys_to_delete.iter().rev() {
+    //     processed_assets.meshes.remove(i);
+    // }
 }
 
 #[repr(C, align(16))]
