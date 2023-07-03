@@ -1,6 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
-use ash::vk::PrimitiveTopology;
 use bevy::app::PluginGroupBuilder;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::diagnostic::LogDiagnosticsPlugin;
@@ -15,7 +14,6 @@ use render::bundles::Camera;
 use render::bundles::CameraBundle;
 use render::bundles::MaterialMeshBundle;
 use render::mesh::Mesh;
-use render::mesh::Vertex;
 use render::primitives;
 use render::primitives::Box;
 use render::RenderPlugin;
@@ -47,7 +45,7 @@ fn main() {
             primary_window: Some(Window {
                 resolution: (1280.0, 720.0).into(),
                 title: "Someday".to_string(),
-                present_mode: bevy::window::PresentMode::Mailbox,
+                present_mode: bevy::window::PresentMode::Fifo,
                 resizable: false,
                 mode: WindowMode::Windowed,
                 ..default()
@@ -65,18 +63,18 @@ fn main() {
 }
 
 fn spawn_stuff(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
-    for x in 0..40 {
-        for y in 0..40 {
-            commands.spawn(MaterialMeshBundle {
-                mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-                transform: Transform::from_translation(Vec3::new(
-                    x as f32 * 2.0,
-                    y as f32 * 2.0,
-                    x as f32 * 2.0,
-                )),
-            });
-        }
-    }
+    // for x in 0..40 {
+    //     for y in 0..40 {
+    //         commands.spawn(MaterialMeshBundle {
+    //             mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
+    //             transform: Transform::from_translation(Vec3::new(
+    //                 x as f32 * 2.0,
+    //                 y as f32 * 2.0,
+    //                 x as f32 * 2.0,
+    //             )),
+    //         });
+    //     }
+    // }
 
     commands.spawn(MaterialMeshBundle {
         mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),

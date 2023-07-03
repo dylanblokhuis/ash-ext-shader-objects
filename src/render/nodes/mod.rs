@@ -38,12 +38,12 @@ impl PresentNode {
     pub fn new(render_instance: &RenderInstance, render_allocator: &mut RenderAllocator) -> Self {
         let renderer = &render_instance.0;
         let vert = Shader::from_file(
-            r#"C:\Users\dylan\dev\someday\shader\main.vert"#,
+            r#"./shader/main.vert"#,
             super::shaders::ShaderKind::Vertex,
             "main",
         );
         let frag = Shader::from_file(
-            r#"C:\Users\dylan\dev\someday\shader\main.frag"#,
+            r#"./shader/main.frag"#,
             super::shaders::ShaderKind::Fragment,
             "main",
         );
@@ -185,7 +185,7 @@ impl SequentialNode for PresentNode {
                     let dependency_info = vk::DependencyInfo::default()
                         .image_memory_barriers(std::slice::from_ref(&image_memory_barrier));
 
-                    device.cmd_pipeline_barrier2(draw_command_buffer, &dependency_info);
+                    renderer.synchronization2.cmd_pipeline_barrier2(draw_command_buffer, &dependency_info);
                 }
 
                 let color_attach = &[vk::RenderingAttachmentInfo::default()
@@ -217,7 +217,7 @@ impl SequentialNode for PresentNode {
                     .color_attachments(color_attach)
                     .depth_attachment(depth_attach);
 
-                device.cmd_begin_rendering(draw_command_buffer, &render_pass_begin_info);
+                renderer.dynamic_rendering.cmd_begin_rendering(draw_command_buffer, &render_pass_begin_info);
                 device.cmd_bind_descriptor_sets(
                     draw_command_buffer,
                     PipelineBindPoint::GRAPHICS,
@@ -303,7 +303,7 @@ impl SequentialNode for PresentNode {
                     }
                 }
 
-                device.cmd_end_rendering(draw_command_buffer);
+                renderer.dynamic_rendering.cmd_end_rendering(draw_command_buffer);
                 {
                     let image_memory_barrier = vk::ImageMemoryBarrier2::default()
                         .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
@@ -322,8 +322,8 @@ impl SequentialNode for PresentNode {
 
                     let dependency_info = vk::DependencyInfo::default()
                         .image_memory_barriers(std::slice::from_ref(&image_memory_barrier));
-
-                    device.cmd_pipeline_barrier2(draw_command_buffer, &dependency_info);
+                    
+                    renderer.synchronization2.cmd_pipeline_barrier2(draw_command_buffer, &dependency_info);
                 }
             },
         );

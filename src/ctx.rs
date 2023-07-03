@@ -1,13 +1,17 @@
 use ash::{
     extensions::{
-        ext::{DebugUtils, ExtendedDynamicState, ShaderObject},
-        khr::{Surface, Swapchain},
+        ext::{DebugUtils,  ShaderObject},
+        khr::{Surface, Swapchain, DynamicRendering, Synchronization2},
     },
     vk::{
         ExtDescriptorIndexingFn, KhrGetMemoryRequirements2Fn,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
-        PhysicalDeviceShaderObjectFeaturesEXT, API_VERSION_1_3,
+        PhysicalDeviceShaderObjectFeaturesEXT,  API_VERSION_1_2,
     },
+};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use ash::vk::{
+    KhrGetPhysicalDeviceProperties2Fn, KhrPortabilityEnumerationFn, KhrPortabilitySubsetFn,
 };
 use ash::{vk, Entry};
 use ash::{Device, Instance};
@@ -130,6 +134,8 @@ pub struct ExampleBase {
     pub instance: Instance,
     pub device: Device,
     pub shader_object: ShaderObject,
+    pub synchronization2: Synchronization2,
+    pub dynamic_rendering: DynamicRendering,
     pub surface_loader: Surface,
     pub swapchain_loader: Swapchain,
     pub debug_utils_loader: DebugUtils,
@@ -173,6 +179,7 @@ impl ExampleBase {
 
             let layer_names = [
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0"),
+                CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_synchronization2\0"),
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_shader_object\0"),
             ];
             let layers_names_raw: Vec<*const c_char> = layer_names
@@ -185,15 +192,27 @@ impl ExampleBase {
                     .unwrap()
                     .to_vec();
             extension_names.push(DebugUtils::NAME.as_ptr());
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                extension_names.push(KhrPortabilityEnumerationFn::NAME.as_ptr());
+                // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
+                extension_names.push(KhrGetPhysicalDeviceProperties2Fn::NAME.as_ptr());
+            }
+
 
             let appinfo = vk::ApplicationInfo::default()
                 .application_name(app_name)
                 .application_version(0)
                 .engine_name(app_name)
                 .engine_version(0)
-                .api_version(API_VERSION_1_3);
+                .api_version(API_VERSION_1_2);
 
-            let create_flags = vk::InstanceCreateFlags::default();
+            let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
+                vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
+            } else {
+                vk::InstanceCreateFlags::default()
+            };
+            
             let create_info = vk::InstanceCreateInfo::default()
                 .application_info(&appinfo)
                 .enabled_layer_names(&layers_names_raw)
@@ -263,8 +282,11 @@ impl ExampleBase {
             let queue_family_index = queue_family_index as u32;
             let device_extension_names_raw = [
                 Swapchain::NAME.as_ptr(),
+                #[cfg(any(target_os = "macos", target_os = "ios"))]
+                DynamicRendering::NAME.as_ptr(),
+                Synchronization2::NAME.as_ptr(),
+                KhrPortabilitySubsetFn::NAME.as_ptr(),
                 ShaderObject::NAME.as_ptr(),
-                ExtendedDynamicState::NAME.as_ptr(),
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 KhrGetMemoryRequirements2Fn::NAME.as_ptr(),
             ];
@@ -274,10 +296,10 @@ impl ExampleBase {
                 ..Default::default()
             };
             let priorities = [1.0];
-            let mut physical_device_dynamic_rendering_features =
-                vk::PhysicalDeviceVulkan13Features::default()
-                    .dynamic_rendering(true)
-                    .synchronization2(true);
+            
+
+            let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
+            let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
 
             let mut shader_object_features =
                 PhysicalDeviceShaderObjectFeaturesEXT::default().shader_object(true);
@@ -288,8 +310,8 @@ impl ExampleBase {
             let mut indexing_features = PhysicalDeviceDescriptorIndexingFeatures::default()
                 .descriptor_binding_partially_bound(true)
                 .shader_sampled_image_array_non_uniform_indexing(true)
-                .shader_uniform_buffer_array_non_uniform_indexing(true)
-                .shader_storage_buffer_array_non_uniform_indexing(true)
+                // .shader_uniform_buffer_array_non_uniform_indexing(true)
+                // .shader_storage_buffer_array_non_uniform_indexing(true)
                 // after bind
                 .descriptor_binding_sampled_image_update_after_bind(true)
                 .descriptor_binding_uniform_buffer_update_after_bind(true)
@@ -307,7 +329,8 @@ impl ExampleBase {
                 .queue_create_infos(std::slice::from_ref(&queue_info))
                 .enabled_extension_names(&device_extension_names_raw)
                 .enabled_features(&features)
-                .push_next(&mut physical_device_dynamic_rendering_features)
+                .push_next(&mut dynamic_rendering_features)
+                .push_next(&mut synchronization2_features)
                 // .push_next(&mut vertex_dynamic_state_features)
                 .push_next(&mut shader_object_features)
                 .push_next(&mut buffer_features)
@@ -358,7 +381,8 @@ impl ExampleBase {
                 PresentMode::AutoNoVsync => vk::PresentModeKHR::IMMEDIATE,
                 PresentMode::AutoVsync => vk::PresentModeKHR::FIFO_RELAXED,
             };
-            assert!(present_modes.contains(&present_mode));
+            println!("{:?}", present_mode);
+            assert!(present_modes.contains(&present_mode), "Present mode not supported.");
             let swapchain_loader = Swapchain::new(&instance, &device);
 
             let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
@@ -525,12 +549,16 @@ impl ExampleBase {
 
             let shader_object = ShaderObject::new(&instance, &device);
             let immutable_samplers = Self::create_samplers(&device);
+            let synchronization2 = Synchronization2::new(&instance, &device);
+            let dynamic_rendering = DynamicRendering::new(&instance, &device);
             ExampleBase {
                 entry,
                 instance,
                 window,
                 shader_object,
                 device,
+                synchronization2,
+                dynamic_rendering,
                 queue_family_index,
                 pdevice,
                 immutable_samplers,
