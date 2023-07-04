@@ -18,9 +18,9 @@ use ash::{Device, Instance};
 use bevy::window::PresentMode;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use rayon::ThreadPool;
+use std::default::Default;
 use std::ffi::CStr;
 use std::{borrow::Cow, collections::HashMap};
-use std::{default::Default, thread::ThreadId};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
 
@@ -238,11 +238,17 @@ impl ExampleBase {
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");
 
-            let layer_names = [
-                CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0"),
+            let mut layer_names = vec![
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_synchronization2\0"),
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_shader_object\0"),
             ];
+
+            if cfg!(debug_assertions) {
+                layer_names.push(CStr::from_bytes_with_nul_unchecked(
+                    b"VK_LAYER_KHRONOS_validation\0",
+                ))
+            }
+
             let layers_names_raw: Vec<*const c_char> = layer_names
                 .iter()
                 .map(|raw_name| raw_name.as_ptr())

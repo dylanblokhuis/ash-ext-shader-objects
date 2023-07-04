@@ -23,7 +23,8 @@ use bevy::{
     app::{AppExit, AppLabel, SubApp},
     ecs::{event::ManualEventReader, schedule::ScheduleLabel},
     prelude::*,
-    time::create_time_channels,
+    time::{create_time_channels, TimeSender},
+    utils::Instant,
     window::{PrimaryWindow, RawHandleWrapper},
 };
 use bytemuck::offset_of;
@@ -304,6 +305,12 @@ fn render_system(world: &mut World) {
         graph.update(world);
         graph.run(world);
     });
+
+    // update the time and send it to the app world
+    let time_sender = world.resource::<TimeSender>();
+    time_sender.0.try_send(Instant::now()).expect(
+        "The TimeSender channel should always be empty during render. You might need to add the bevy::core::time_system to your app.",
+    );
 }
 
 #[derive(Resource)]

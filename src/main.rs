@@ -73,8 +73,8 @@ fn main() {
 
 fn spawn_stuff(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
     let _ = info_span!("Spawning objects");
-    for x in 0..200 {
-        for y in 0..200 {
+    for x in 0..10 {
+        for y in 0..10 {
             commands.spawn(MaterialMeshBundle {
                 mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
                 transform: Transform::from_translation(Vec3::new(
