@@ -98,6 +98,7 @@ impl Buffer {
     }
 }
 
+#[derive(Debug)]
 pub struct Image {
     pub image: vk::Image,
     pub allocation: Option<Allocation>,

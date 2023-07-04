@@ -39,7 +39,7 @@ impl PluginGroup for PluginBundle {
 }
 
 fn main() {
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracing")]
     {
         use tracing_subscriber::layer::SubscriberExt;
         tracing::subscriber::set_global_default(
@@ -54,7 +54,7 @@ fn main() {
             primary_window: Some(Window {
                 resolution: (1280.0, 720.0).into(),
                 title: "Someday".to_string(),
-                present_mode: bevy::window::PresentMode::Fifo,
+                present_mode: bevy::window::PresentMode::Mailbox,
                 resizable: false,
                 mode: WindowMode::Windowed,
                 ..default()

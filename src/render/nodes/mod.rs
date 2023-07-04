@@ -1,4 +1,4 @@
-use std::{mem::size_of, sync::Arc, thread::ThreadId};
+use std::{mem::size_of, sync::Arc};
 
 use ash::vk::{
     self, CompareOp, CullModeFlags, DeviceSize, FrontFace, PipelineBindPoint, RenderingFlags,
@@ -11,13 +11,13 @@ use crate::{
     buffer::{Buffer, Image},
     ctx::record_submit_commandbuffer,
 };
-use rayon::prelude::*;
 
 use super::{
     mesh::Mesh, shaders::Shader, GpuMesh, ProcessedRenderAssets, RenderAllocator, RenderInstance,
     SequentialNode,
 };
 
+#[derive(Debug)]
 pub struct PresentNode {
     shaders: Vec<ShaderEXT>,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -118,6 +118,7 @@ impl PresentNode {
 }
 
 impl SequentialNode for PresentNode {
+    #[tracing::instrument(name = "PresentNode::update", skip_all)]
     fn update(&mut self, world: &mut bevy::prelude::World) {
         let assets = world.resource::<ProcessedRenderAssets>();
         if assets.buffers.contains_key("camera") && !self.uniform.has_been_written_to {
@@ -166,8 +167,8 @@ impl SequentialNode for PresentNode {
         }
     }
 
+    #[tracing::instrument(name = "PresentNode::run", skip_all)]
     fn run(&self, world: &bevy::prelude::World) -> anyhow::Result<()> {
-        let _ = info_span!("Run Present Node").entered();
         let assets = Arc::new(world.resource::<ProcessedRenderAssets>());
         let render_instance = world.resource::<RenderInstance>();
 
@@ -198,7 +199,6 @@ impl SequentialNode for PresentNode {
             &[renderer.present_complete_semaphore],
             &[renderer.rendering_complete_semaphore],
             |device, draw_command_buffer| unsafe {
-                let _ = info_span!("Run Primary Command buffer").entered();
                 {
                     let image_memory_barrier = vk::ImageMemoryBarrier2::default()
                         .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
@@ -313,21 +313,14 @@ impl SequentialNode for PresentNode {
                     .threaded_command_buffers
                     .read()
                     .unwrap()
-                    .par_iter()
+                    .iter()
                     .for_each(|(_, buffer)| {
-                        let formats = &[renderer.surface_format.format];
+                        let color_attachment_formats = &[renderer.surface_format.format];
                         let mut command_buffer_inheritance_info =
                             vk::CommandBufferInheritanceRenderingInfo::default()
                                 .view_mask(0)
-                                .color_attachment_formats(formats)
-                                .depth_attachment_format(
-                                    vk::Format::D16_UNORM, // depth_attachment_format
-                                                           //     .map_or(vk::Format::UNDEFINED, Into::into),
-                                )
-                                // .stencil_attachment_format(
-                                //     stencil_attachment_format
-                                //         .map_or(vk::Format::UNDEFINED, Into::into),
-                                // )
+                                .color_attachment_formats(color_attachment_formats)
+                                .depth_attachment_format(renderer.depth_image_format)
                                 .rasterization_samples(SampleCountFlags::TYPE_1);
 
                         let inheritence_info = vk::CommandBufferInheritanceInfo::default()
@@ -342,7 +335,7 @@ impl SequentialNode for PresentNode {
                             .expect("Begin commandbuffer");
                     });
 
-                let chunk_amount = 100;
+                let chunk_amount = 20;
                 let chunked_handles: Vec<Vec<&Handle<Mesh>>> = assets
                     .meshes
                     .keys()
@@ -351,21 +344,15 @@ impl SequentialNode for PresentNode {
                     .map(|c| c.to_vec())
                     .collect::<Vec<_>>();
 
-                let queue = crossbeam_queue::ArrayQueue::<ThreadId>::new(
-                    chunked_handles.len() * chunk_amount,
-                );
+                let queue =
+                    crossbeam_queue::ArrayQueue::<usize>::new(chunked_handles.len() * chunk_amount);
 
                 render_instance.0.command_thread_pool.scope(|scope| {
-                    let _ = info_span!("Generate all tasks for render commands in thread pool")
-                        .entered();
-
                     for chunk in chunked_handles.iter() {
                         scope.spawn(|_| {
-                            let _ = info_span!("Generating render commands in thread").entered();
-                            let thread_id = std::thread::current().id();
-
+                            let thread_index = rayon::current_thread_index().unwrap();
                             let command_buffers = renderer.threaded_command_buffers.read().unwrap();
-                            let command_buffer = command_buffers.get(&thread_id).unwrap();
+                            let command_buffer = command_buffers.get(&thread_index).unwrap();
                             let draw_command_buffer = *command_buffer;
 
                             for handle in chunk.iter() {
@@ -415,8 +402,7 @@ impl SequentialNode for PresentNode {
                                     );
                                 }
                             }
-
-                            queue.push(thread_id).unwrap();
+                            queue.push(thread_index).unwrap();
                         });
                     }
                 });
@@ -425,11 +411,11 @@ impl SequentialNode for PresentNode {
                     .threaded_command_buffers
                     .read()
                     .unwrap()
-                    .par_iter()
+                    .iter()
                     .for_each(|(_, buffer)| {
                         device
                             .end_command_buffer(*buffer)
-                            .expect("Begin commandbuffer");
+                            .expect("End commandbuffer");
                     });
 
                 let queue = queue.into_iter().collect::<Vec<_>>();
@@ -439,53 +425,13 @@ impl SequentialNode for PresentNode {
                     .read()
                     .unwrap()
                     .iter()
-                    .filter(|(thread_id, _)| {
-                        queue.contains(thread_id)
-                        // threads_with_recorded_commands
-                        //     .read()
-                        //     .unwrap()
-                        //     .contains(thread_id)
-                    })
+                    .filter(|(thread_index, _)| queue.contains(thread_index))
                     .map(|(_, buffer)| *buffer)
                     .collect::<Vec<_>>();
 
                 renderer
                     .device
                     .cmd_execute_commands(draw_command_buffer, &secondary_command_buffers);
-
-                // for (_, mesh) in assets.meshes.iter() {
-                //     device.cmd_push_constants(
-                //         draw_command_buffer,
-                //         self.pipeline_layout,
-                //         vk::ShaderStageFlags::ALL_GRAPHICS,
-                //         0,
-                //         bytemuck::bytes_of(&PushConstants {
-                //             model: mesh.model_matrix,
-                //         }),
-                //     );
-
-                //     renderer
-                //         .shader_object
-                //         .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
-
-                //     device.cmd_bind_vertex_buffers(
-                //         draw_command_buffer,
-                //         0,
-                //         &[mesh.vertex_buffer.buffer],
-                //         &[0],
-                //     );
-                //     if let Some(index_buffer) = &mesh.index_buffer {
-                //         device.cmd_bind_index_buffer(
-                //             draw_command_buffer,
-                //             index_buffer.buffer,
-                //             0,
-                //             vk::IndexType::UINT32,
-                //         );
-                //         device.cmd_draw_indexed(draw_command_buffer, mesh.index_count, 1, 0, 0, 1);
-                //     } else {
-                //         device.cmd_draw(draw_command_buffer, mesh.vertex_count, 1, 0, 1);
-                //     }
-                // }
 
                 renderer
                     .dynamic_rendering

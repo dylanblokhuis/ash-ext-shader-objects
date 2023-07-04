@@ -201,7 +201,7 @@ pub struct ExampleBase {
     pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
     pub max_descriptor_count: u32,
     pub command_thread_pool: ThreadPool,
-    pub threaded_command_buffers: Arc<RwLock<HashMap<ThreadId, CommandBuffer>>>,
+    pub threaded_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>>,
 
     pub pdevice: vk::PhysicalDevice,
     pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -223,6 +223,7 @@ pub struct ExampleBase {
     pub depth_image: vk::Image,
     pub depth_image_view: vk::ImageView,
     pub depth_image_memory: vk::DeviceMemory,
+    pub depth_image_format: vk::Format,
 
     pub present_complete_semaphore: vk::Semaphore,
     pub rendering_complete_semaphore: vk::Semaphore,
@@ -238,7 +239,7 @@ impl ExampleBase {
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");
 
             let layer_names = [
-                // CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0"),
+                CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0"),
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_synchronization2\0"),
                 CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_shader_object\0"),
             ];
@@ -649,6 +650,7 @@ impl ExampleBase {
                 setup_command_buffer,
                 depth_image,
                 depth_image_view,
+                depth_image_format: depth_image_create_info.format,
                 present_complete_semaphore,
                 rendering_complete_semaphore,
                 draw_commands_reuse_fence,
@@ -712,15 +714,14 @@ impl ExampleBase {
     pub fn create_command_thread_pool(
         device: Device,
         queue_family_index: u32,
-    ) -> (ThreadPool, Arc<RwLock<HashMap<ThreadId, CommandBuffer>>>) {
-        let m_command_buffers: Arc<RwLock<HashMap<ThreadId, CommandBuffer>>> =
+    ) -> (ThreadPool, Arc<RwLock<HashMap<usize, CommandBuffer>>>) {
+        let m_command_buffers: Arc<RwLock<HashMap<usize, CommandBuffer>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let m_command_buffers_clone = m_command_buffers.clone();
 
         let pool = rayon::ThreadPoolBuilder::new()
             .thread_name(|x| format!("Command buffer generation thread {}", x))
             .start_handler(move |x| {
-                println!("Starting thread {}", x);
                 let pool_create_info = vk::CommandPoolCreateInfo::default()
                     .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
                     .queue_family_index(queue_family_index);
@@ -741,7 +742,7 @@ impl ExampleBase {
                 m_command_buffers
                     .write()
                     .unwrap()
-                    .insert(std::thread::current().id(), command_buffers[0]);
+                    .insert(x, command_buffers[0]);
             })
             .build()
             .unwrap();
