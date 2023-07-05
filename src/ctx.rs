@@ -229,7 +229,7 @@ pub struct ExampleBase {
 }
 
 impl ExampleBase {
-    pub fn new(window: RawHandleWrapper, present_mode: PresentMode) -> Self {
+    pub fn new(window: &RawHandleWrapper, present_mode: PresentMode) -> Self {
         unsafe {
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");

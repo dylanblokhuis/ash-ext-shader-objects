@@ -161,18 +161,15 @@ impl Plugin for RenderPlugin {
             .add_asset::<crate::render::image::Image>()
             .add_system(cleanup_on_exit);
 
-        let mut system_state: SystemState<Query<&RawHandleWrapper, With<PrimaryWindow>>> =
-            SystemState::new(&mut app.world);
-        let primary_window = system_state.get(&app.world).get_single().ok().cloned();
-
-        let render_instance = primary_window
-            .map(|wrapper| {
-                RenderInstance(Arc::new(ExampleBase::new(
-                    wrapper,
-                    bevy::window::PresentMode::AutoVsync,
-                )))
-            })
-            .unwrap();
+        let mut system_state: SystemState<
+            Query<(&RawHandleWrapper, &Window), With<PrimaryWindow>>,
+        > = SystemState::new(&mut app.world);
+        let window_query = system_state.get(&app.world);
+        let (window_handle, window) = window_query.get_single().unwrap();
+        let render_instance = RenderInstance(Arc::new(ExampleBase::new(
+            window_handle,
+            window.present_mode,
+        )));
 
         let render_allocator = RenderAllocator(
             Allocator::new(&AllocatorCreateDesc {

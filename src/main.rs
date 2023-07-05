@@ -5,8 +5,8 @@ use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::window::close_on_esc;
 use bevy::window::WindowMode;
-use game::camera_controller::CameraController;
-use game::camera_controller::CameraControllerPlugin;
+use camera_controller::CameraController;
+use camera_controller::CameraControllerPlugin;
 use render::bundles::Camera;
 use render::bundles::CameraBundle;
 use render::bundles::MaterialMeshBundle;
@@ -18,9 +18,9 @@ use render::RenderPlugin;
 use std::default::Default;
 
 mod buffer;
+mod camera_controller;
 mod chunky_list;
 mod ctx;
-mod game;
 mod passes;
 mod render;
 
