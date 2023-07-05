@@ -424,6 +424,7 @@ struct ProcessedRenderAssets {
     buffers: HashMap<&'static str, Buffer>,
 }
 
+#[tracing::instrument(skip_all)]
 fn extract_meshes(
     objects_with_mesh: Extract<Query<(&Handle<Mesh>, &Transform)>>,
     mesh_assets: Extract<Res<Assets<Mesh>>>,
@@ -431,11 +432,6 @@ fn extract_meshes(
     mut render_allocator: ResMut<RenderAllocator>,
     mut processed_assets: ResMut<ProcessedRenderAssets>,
 ) {
-    let _ = info_span!("Extract meshes");
-    if processed_assets.meshes.len() == mesh_assets.len() {
-        return;
-    }
-
     for (handle, transform) in objects_with_mesh.iter() {
         if processed_assets.meshes.contains_key(handle) {
             continue;
@@ -473,7 +469,7 @@ fn extract_meshes(
             );
 
             buf.copy_from_slice(&mesh.indices, 0);
-            return (Some(buf), mesh.indices.len() as u32);
+            (Some(buf), mesh.indices.len() as u32)
         }();
 
         processed_assets.meshes.insert(
@@ -522,13 +518,17 @@ struct CameraBuffer {
     world_position: Vec3,
 }
 
+/// only runs whenever the camera component or transform component changes
+#[tracing::instrument(skip_all)]
 fn extract_camera_uniform(
-    camera: Extract<Query<(&Camera, &Transform)>>,
+    camera: Extract<Query<(&Camera, &Transform), Or<(Changed<Camera>, Changed<Transform>)>>>,
     mut processed_assets: ResMut<ProcessedRenderAssets>,
     render_instance: Res<RenderInstance>,
     mut render_allocator: ResMut<RenderAllocator>,
 ) {
-    let (camera, camera_transform) = camera.single();
+    let Ok((camera, camera_transform)) = camera.get_single() else {
+        return;
+    };
 
     let view = camera_transform.compute_matrix();
     let inverse_view = view.inverse();
