@@ -30,7 +30,6 @@ thiserror = "1.0.40"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
 tracing-tracy = { version = "0.10", optional = true }
-winit = "0.28.6"
 
 [features]
 tracing = ["tracing-tracy", "tracing-subscriber"]
@@ -38,5 +37,5 @@ tracing = ["tracing-tracy", "tracing-subscriber"]
 
 [dependencies.bevy]
 default-features = false
-features = ["bevy_asset"]
+features = ["bevy_asset", "bevy_winit"]
 version = "0.10"

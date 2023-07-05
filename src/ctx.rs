@@ -15,16 +15,13 @@ use ash::{
 };
 use ash::{vk, Entry};
 use ash::{Device, Instance};
-use bevy::window::PresentMode;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use bevy::window::{PresentMode, RawHandleWrapper};
 use rayon::ThreadPool;
 use std::default::Default;
 use std::ffi::CStr;
 use std::{borrow::Cow, collections::HashMap};
 use std::{ops::Drop, sync::RwLock};
 use std::{os::raw::c_char, sync::Arc};
-
-use winit::window::Window;
 
 use crate::buffer::{Buffer, Image};
 
@@ -196,7 +193,6 @@ pub struct ExampleBase {
     pub surface_loader: Surface,
     pub swapchain_loader: Swapchain,
     pub debug_utils_loader: DebugUtils,
-    pub window: winit::window::Window,
     pub debug_call_back: vk::DebugUtilsMessengerEXT,
     pub immutable_samplers: HashMap<SamplerDesc, vk::Sampler>,
     pub max_descriptor_count: u32,
@@ -233,7 +229,7 @@ pub struct ExampleBase {
 }
 
 impl ExampleBase {
-    pub fn new(window: Window, present_mode: PresentMode) -> Self {
+    pub fn new(window: RawHandleWrapper, present_mode: PresentMode) -> Self {
         unsafe {
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");
@@ -255,7 +251,7 @@ impl ExampleBase {
                 .collect();
 
             let mut extension_names =
-                ash_window::enumerate_required_extensions(window.raw_display_handle())
+                ash_window::enumerate_required_extensions(window.display_handle)
                     .unwrap()
                     .to_vec();
             extension_names.push(DebugUtils::NAME.as_ptr());
@@ -309,8 +305,8 @@ impl ExampleBase {
             let surface = ash_window::create_surface(
                 &entry,
                 &instance,
-                window.raw_display_handle(),
-                window.raw_window_handle(),
+                window.get_display_handle(),
+                window.get_window_handle(),
                 None,
             )
             .unwrap();
@@ -425,10 +421,10 @@ impl ExampleBase {
                 desired_image_count = surface_capabilities.max_image_count;
             }
             let surface_resolution = match surface_capabilities.current_extent.width {
-                std::u32::MAX => vk::Extent2D {
-                    width: window.inner_size().width,
-                    height: window.inner_size().height,
-                },
+                // std::u32::MAX => vk::Extent2D {
+                //     width: 1280,
+                //     height: 720,
+                // },
                 _ => surface_capabilities.current_extent,
             };
             let pre_transform = if surface_capabilities
@@ -630,7 +626,6 @@ impl ExampleBase {
             ExampleBase {
                 entry,
                 instance,
-                window,
                 shader_object,
                 device,
                 synchronization2,

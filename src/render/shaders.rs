@@ -1,9 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    ffi::{CStr, CString},
+    ffi::CString,
 };
 
-use ash::vk::{self, SamplerCreateInfo, ShaderCodeTypeEXT, ShaderCreateInfoEXT};
+use ash::vk::{self, ShaderCodeTypeEXT, ShaderCreateInfoEXT};
 use rspirv_reflect::BindingCount;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc};
@@ -61,8 +61,8 @@ impl Shader {
     pub fn create_descriptor_sets(
         &self,
         render_instance: &RenderInstance,
-        descriptor_set_layouts: &Vec<vk::DescriptorSetLayout>,
-        set_layout_info: &Vec<HashMap<u32, vk::DescriptorType>>,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
+        set_layout_info: &[HashMap<u32, vk::DescriptorType>],
     ) -> Vec<vk::DescriptorSet> {
         let mut descriptor_pool_sizes: Vec<vk::DescriptorPoolSize> = Vec::new();
         for bindings in set_layout_info.iter() {

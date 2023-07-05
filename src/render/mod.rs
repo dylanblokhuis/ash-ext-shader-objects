@@ -16,12 +16,12 @@ use std::{
 };
 
 use ash::vk::{
-    self, PrimitiveTopology, VertexInputAttributeDescription2EXT,
+    self, ImageCreateInfo, PrimitiveTopology, VertexInputAttributeDescription2EXT,
     VertexInputBindingDescription2EXT, VertexInputRate,
 };
 use bevy::{
     app::{AppExit, AppLabel, SubApp},
-    ecs::{event::ManualEventReader, schedule::ScheduleLabel},
+    ecs::{event::ManualEventReader, schedule::ScheduleLabel, system::SystemState},
     prelude::*,
     time::{create_time_channels, TimeSender},
     utils::Instant,
@@ -33,19 +33,20 @@ use gpu_allocator::{
     MemoryLocation,
 };
 
-use crate::{
-    bevy_runner::{config::VulkanSettings, vulkan_windows::BevyVulkanoWindows},
-    buffer::Buffer,
-    ctx::ExampleBase,
-};
+use crate::{buffer::Buffer, ctx::ExampleBase};
 
-use self::{bundles::Camera, extract::Extract, mesh::Mesh, nodes::PresentNode};
+use self::{
+    bundles::{Camera, MaterialMeshBundle},
+    extract::Extract,
+    image::Image,
+    material::{Material, MaterialUniform},
+    mesh::Mesh,
+    nodes::PresentNode,
+};
 
 /// Contains the default Bevy rendering backend based on wgpu.
 #[derive(Default)]
-pub struct RenderPlugin {
-    pub wgpu_settings: VulkanSettings,
-}
+pub struct RenderPlugin {}
 
 /// The labels of the default App rendering sets.
 ///
@@ -156,7 +157,34 @@ impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScratchMainWorld>()
             .add_asset::<Mesh>()
+            .add_asset::<Material>()
+            .add_asset::<crate::render::image::Image>()
             .add_system(cleanup_on_exit);
+
+        let mut system_state: SystemState<Query<&RawHandleWrapper, With<PrimaryWindow>>> =
+            SystemState::new(&mut app.world);
+        let primary_window = system_state.get(&app.world).get_single().ok().cloned();
+
+        let render_instance = primary_window
+            .map(|wrapper| {
+                RenderInstance(Arc::new(ExampleBase::new(
+                    wrapper,
+                    bevy::window::PresentMode::AutoVsync,
+                )))
+            })
+            .unwrap();
+
+        let render_allocator = RenderAllocator(
+            Allocator::new(&AllocatorCreateDesc {
+                instance: render_instance.0.instance.clone(),
+                device: render_instance.0.device.clone(),
+                physical_device: render_instance.0.pdevice,
+                debug_settings: Default::default(),
+                buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
+                allocation_sizes: Default::default(),
+            })
+            .unwrap(),
+        );
 
         let mut render_app = App::empty();
         render_app.add_simple_outer_schedule();
@@ -175,22 +203,17 @@ impl Plugin for RenderPlugin {
 
         render_app
             .init_non_send_resource::<NonSendMarker>()
-            .init_resource::<SequentialPassSystem>()
-            .init_resource::<RenderResourcesSetup>()
             .init_resource::<ProcessedRenderAssets>()
+            .init_resource::<SequentialPassSystem>()
+            .insert_resource(render_instance)
+            .insert_resource(render_allocator)
             .add_schedule(CoreSchedule::Main, render_schedule)
-            .add_system(extract_render_instance.in_schedule(ExtractSchedule))
-            .add_system(
-                extract_meshes
-                    .in_schedule(ExtractSchedule)
-                    .run_if(is_render_resources_setup),
-            )
-            .add_system(
-                extract_camera_uniform
-                    .in_schedule(ExtractSchedule)
-                    .run_if(is_render_resources_setup),
-            )
-            .add_system(basic_renderer_setup.run_if(is_render_resources_setup));
+            // .add_system(extract_render_instance.in_schedule(ExtractSchedule))
+            .add_system(extract_meshes.in_schedule(ExtractSchedule))
+            .add_system(extract_materials.in_schedule(ExtractSchedule))
+            .add_system(extract_camera_uniform.in_schedule(ExtractSchedule))
+            .add_system(extract_objects.in_schedule(ExtractSchedule))
+            .add_system(basic_renderer_setup.in_set(RenderSet::Prepare));
 
         let (sender, receiver) = create_time_channels();
         app.insert_resource(receiver);
@@ -258,7 +281,7 @@ pub trait SequentialNode: Send + Sync + 'static {
     /// Updates internal node state using the current render [`World`] prior to the run method.
     fn update(&mut self, _world: &mut World) {}
 
-    fn run(&self, world: &World) -> anyhow::Result<()>;
+    fn run(&self, world: &mut World) -> anyhow::Result<()>;
 }
 
 struct SequentialPass {
@@ -290,7 +313,7 @@ impl SequentialPassSystem {
         }
     }
 
-    pub fn run(&mut self, world: &World) {
+    pub fn run(&mut self, world: &mut World) {
         for pass in self.passes.iter_mut() {
             pass.node.run(world).unwrap();
         }
@@ -329,44 +352,37 @@ impl RenderAllocator {
     }
 }
 
-fn extract_render_instance(
-    mut commands: Commands,
-    _marker: NonSend<NonSendMarker>,
-    windows: Extract<Query<(Entity, &Window, &RawHandleWrapper, Option<&PrimaryWindow>)>>,
-    vulkano_windows: Extract<NonSend<BevyVulkanoWindows>>,
-    setup: Res<RenderResourcesSetup>,
-) {
-    if setup.0 {
-        return;
-    }
-    let Ok((entity, _, _, _)) = windows.get_single() else {
-        return;
-    };
-    let Some(vulkano_window) = vulkano_windows.get_vulkano_window(entity) else {
-        return;
-    };
+// fn extract_render_instance(
+//     mut commands: Commands,
+//     _marker: NonSend<NonSendMarker>,
+//     windows: Extract<Query<(Entity, &Window, &RawHandleWrapper, Option<&PrimaryWindow>)>>,
+//     vulkano_windows: Extract<NonSend<BevyVulkanoWindows>>,
+//     setup: Res<RenderResourcesSetup>,
+// ) {
+//     if setup.0 {
+//         return;
+//     }
+//     let Ok((entity, _, _, _)) = windows.get_single() else {
+//         return;
+//     };
+//     let Some(vulkano_window) = vulkano_windows.get_vulkano_window(entity) else {
+//         return;
+//     };
 
-    let renderer = vulkano_window.renderer.clone();
-    let allocator = Allocator::new(&AllocatorCreateDesc {
-        instance: renderer.instance.clone(),
-        device: renderer.device.clone(),
-        physical_device: renderer.pdevice,
-        debug_settings: Default::default(),
-        buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
-        allocation_sizes: Default::default(),
-    })
-    .unwrap();
-    commands.insert_resource(RenderAllocator(allocator));
-    commands.insert_resource(RenderInstance(vulkano_window.renderer.clone()));
-    commands.insert_resource(RenderResourcesSetup(true))
-}
-
-#[derive(Resource, Default)]
-struct RenderResourcesSetup(bool);
-
-fn is_render_resources_setup(setup: Res<RenderResourcesSetup>) -> bool {
-    setup.0
-}
+//     let renderer = vulkano_window.renderer.clone();
+//     let allocator = Allocator::new(&AllocatorCreateDesc {
+//         instance: renderer.instance.clone(),
+//         device: renderer.device.clone(),
+//         physical_device: renderer.pdevice,
+//         debug_settings: Default::default(),
+//         buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
+//         allocation_sizes: Default::default(),
+//     })
+//     .unwrap();
+//     commands.insert_resource(RenderAllocator(allocator));
+//     commands.insert_resource(RenderInstance(vulkano_window.renderer.clone()));
+//     commands.insert_resource(RenderResourcesSetup(true))
+// }
 
 #[derive(Debug)]
 struct GpuMesh {
@@ -375,7 +391,6 @@ struct GpuMesh {
     vertex_count: u32,
     index_count: u32,
     topology: PrimitiveTopology,
-    model_matrix: Mat4,
 }
 
 impl GpuMesh {
@@ -421,22 +436,24 @@ impl GpuMesh {
 #[derive(Resource, Default)]
 struct ProcessedRenderAssets {
     meshes: HashMap<Handle<Mesh>, GpuMesh>,
+    materials: HashMap<Handle<Material>, GpuMaterial>,
     buffers: HashMap<&'static str, Buffer>,
+    textures: HashMap<Handle<Image>, crate::buffer::Image>,
 }
 
 #[tracing::instrument(skip_all)]
 fn extract_meshes(
-    objects_with_mesh: Extract<Query<(&Handle<Mesh>, &Transform)>>,
+    objects_with_mesh: Extract<Query<&Handle<Mesh>>>,
     mesh_assets: Extract<Res<Assets<Mesh>>>,
     render_instance: Res<RenderInstance>,
     mut render_allocator: ResMut<RenderAllocator>,
     mut processed_assets: ResMut<ProcessedRenderAssets>,
 ) {
-    for (handle, transform) in objects_with_mesh.iter() {
-        if processed_assets.meshes.contains_key(handle) {
+    for mesh_handle in objects_with_mesh.iter() {
+        if processed_assets.meshes.contains_key(mesh_handle) {
             continue;
         }
-        let mesh = mesh_assets.get(handle).unwrap();
+        let mesh = mesh_assets.get(mesh_handle).unwrap();
         let vertex_buffer = {
             let mut buf = Buffer::new(
                 &render_instance.0.device,
@@ -473,14 +490,13 @@ fn extract_meshes(
         }();
 
         processed_assets.meshes.insert(
-            handle.clone(),
+            mesh_handle.clone(),
             GpuMesh {
                 vertex_buffer,
                 index_buffer,
                 vertex_count: mesh.vertices.len() as u32,
                 index_count: index_len,
                 topology: mesh.primitive_topology,
-                model_matrix: transform.compute_matrix(),
             },
         );
     }
@@ -504,6 +520,76 @@ fn extract_meshes(
     // for i in keys_to_delete.iter().rev() {
     //     processed_assets.meshes.remove(i);
     // }
+}
+
+#[tracing::instrument(skip_all)]
+fn extract_objects(
+    mut commands: Commands,
+    objects: Extract<Query<(Entity, &Handle<Mesh>, &Handle<Material>, &Transform)>>,
+) {
+    for (entity, mesh_handle, material_handle, transform) in objects.iter() {
+        commands.get_or_spawn(entity).insert(MaterialMeshBundle {
+            mesh: mesh_handle.clone(),
+            material: material_handle.clone(),
+            transform: *transform,
+        });
+    }
+}
+
+struct GpuMaterial {
+    material_buffer: Buffer,
+}
+#[tracing::instrument(skip_all)]
+fn extract_materials(
+    materials: Extract<Query<&Handle<Material>>>,
+    material_assets: Extract<Res<Assets<Material>>>,
+    texture_assets: Extract<Res<Assets<Image>>>,
+    render_instance: Res<RenderInstance>,
+    mut render_allocator: ResMut<RenderAllocator>,
+    mut processed_assets: ResMut<ProcessedRenderAssets>,
+) {
+    for handle in materials.iter() {
+        if processed_assets.materials.contains_key(handle) {
+            continue;
+        }
+
+        let material = material_assets.get(handle).unwrap();
+        let buffer = {
+            let mut buf = Buffer::new(
+                &render_instance.0.device,
+                &mut render_allocator.0,
+                &vk::BufferCreateInfo {
+                    size: std::mem::size_of::<material::MaterialUniform>() as u64,
+                    usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    sharing_mode: vk::SharingMode::EXCLUSIVE,
+                    ..Default::default()
+                },
+                MemoryLocation::CpuToGpu,
+            );
+
+            buf.copy_from_slice(&[MaterialUniform::from_material(material.clone())], 0);
+            buf
+        };
+
+        if let Some(base_color_texture) = material.base_color_texture.as_ref() {
+            let img = texture_assets.get(base_color_texture).unwrap();
+            let texture = crate::buffer::Image::from_image_buffer(
+                &render_instance,
+                &mut render_allocator,
+                img.data.clone(),
+            );
+            processed_assets
+                .textures
+                .insert(base_color_texture.clone(), texture);
+        }
+
+        processed_assets.materials.insert(
+            handle.clone(),
+            GpuMaterial {
+                material_buffer: buffer,
+            },
+        );
+    }
 }
 
 #[repr(C, align(16))]

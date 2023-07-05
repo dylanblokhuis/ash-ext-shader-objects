@@ -4,7 +4,7 @@ use ash::vk::{
     self, CompareOp, CullModeFlags, DeviceSize, FrontFace, PipelineBindPoint, RenderingFlags,
     SampleCountFlags, ShaderEXT, ShaderStageFlags,
 };
-use bevy::prelude::*;
+use bevy::{ecs::system::SystemState, prelude::*};
 use gpu_allocator::MemoryLocation;
 
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    mesh::Mesh, shaders::Shader, GpuMesh, ProcessedRenderAssets, RenderAllocator, RenderInstance,
-    SequentialNode,
+    extract::Extract, material::Material, mesh::Mesh, shaders::Shader, GpuMesh,
+    ProcessedRenderAssets, RenderAllocator, RenderInstance, SequentialNode,
 };
 
 #[derive(Debug)]
@@ -168,11 +168,14 @@ impl SequentialNode for PresentNode {
     }
 
     #[tracing::instrument(name = "PresentNode::run", skip_all)]
-    fn run(&self, world: &bevy::prelude::World) -> anyhow::Result<()> {
-        let assets = Arc::new(world.resource::<ProcessedRenderAssets>());
-        let render_instance = world.resource::<RenderInstance>();
+    fn run(&self, world: &mut bevy::prelude::World) -> anyhow::Result<()> {
+        let mut objects = world.query::<(&Handle<Mesh>, &Transform)>();
+        let assets = world.resource::<ProcessedRenderAssets>();
 
-        if assets.meshes.is_empty() {
+        let render_instance = world.resource::<RenderInstance>();
+        let objects_count = objects.iter(world).count();
+
+        if objects_count == 0 {
             return Ok(());
         }
 
@@ -336,71 +339,56 @@ impl SequentialNode for PresentNode {
                     });
 
                 let chunk_amount = 20;
-                let chunked_handles: Vec<Vec<&Handle<Mesh>>> = assets
-                    .meshes
-                    .keys()
-                    .collect::<Vec<_>>()
-                    .chunks(chunk_amount)
-                    .map(|c| c.to_vec())
-                    .collect::<Vec<_>>();
+                // let chunked_handles: Vec<Vec<&Handle<Mesh>>> = objects.
 
-                let queue =
-                    crossbeam_queue::ArrayQueue::<usize>::new(chunked_handles.len() * chunk_amount);
+                let queue = crossbeam_queue::ArrayQueue::<usize>::new(objects_count);
 
                 render_instance.0.command_thread_pool.scope(|scope| {
-                    for chunk in chunked_handles.iter() {
+                    for (mesh_handle, transform) in objects.iter(world) {
                         scope.spawn(|_| {
                             let thread_index = rayon::current_thread_index().unwrap();
                             let command_buffers = renderer.threaded_command_buffers.read().unwrap();
                             let command_buffer = command_buffers.get(&thread_index).unwrap();
                             let draw_command_buffer = *command_buffer;
 
-                            for handle in chunk.iter() {
-                                let mesh = &assets.meshes.get(handle).unwrap();
-                                device.cmd_push_constants(
-                                    draw_command_buffer,
-                                    self.pipeline_layout,
-                                    vk::ShaderStageFlags::ALL_GRAPHICS,
-                                    0,
-                                    bytemuck::bytes_of(&PushConstants {
-                                        model: mesh.model_matrix,
-                                    }),
-                                );
+                            let mesh = &assets.meshes.get(mesh_handle).unwrap();
+                            device.cmd_push_constants(
+                                draw_command_buffer,
+                                self.pipeline_layout,
+                                vk::ShaderStageFlags::ALL_GRAPHICS,
+                                0,
+                                bytemuck::bytes_of(&PushConstants {
+                                    model: transform.compute_matrix(),
+                                }),
+                            );
 
-                                renderer
-                                    .shader_object
-                                    .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
+                            renderer
+                                .shader_object
+                                .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
 
-                                device.cmd_bind_vertex_buffers(
+                            device.cmd_bind_vertex_buffers(
+                                draw_command_buffer,
+                                0,
+                                &[mesh.vertex_buffer.buffer],
+                                &[0],
+                            );
+                            if let Some(index_buffer) = &mesh.index_buffer {
+                                device.cmd_bind_index_buffer(
                                     draw_command_buffer,
+                                    index_buffer.buffer,
                                     0,
-                                    &[mesh.vertex_buffer.buffer],
-                                    &[0],
+                                    vk::IndexType::UINT32,
                                 );
-                                if let Some(index_buffer) = &mesh.index_buffer {
-                                    device.cmd_bind_index_buffer(
-                                        draw_command_buffer,
-                                        index_buffer.buffer,
-                                        0,
-                                        vk::IndexType::UINT32,
-                                    );
-                                    device.cmd_draw_indexed(
-                                        draw_command_buffer,
-                                        mesh.index_count,
-                                        1,
-                                        0,
-                                        0,
-                                        1,
-                                    );
-                                } else {
-                                    device.cmd_draw(
-                                        draw_command_buffer,
-                                        mesh.vertex_count,
-                                        1,
-                                        0,
-                                        1,
-                                    );
-                                }
+                                device.cmd_draw_indexed(
+                                    draw_command_buffer,
+                                    mesh.index_count,
+                                    1,
+                                    0,
+                                    0,
+                                    1,
+                                );
+                            } else {
+                                device.cmd_draw(draw_command_buffer, mesh.vertex_count, 1, 0, 1);
                             }
                             queue.push(thread_index).unwrap();
                         });

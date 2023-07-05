@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 
-use super::mesh::Mesh;
+use super::{material::Material, mesh::Mesh};
 
 #[derive(Bundle, Clone)]
 pub struct MaterialMeshBundle {
     pub mesh: Handle<Mesh>,
-    // pub material: Handle<M>,
+    pub material: Handle<Material>,
     pub transform: Transform,
     // pub global_transform: GlobalTransform,
     // /// User indication of whether an entity is visible

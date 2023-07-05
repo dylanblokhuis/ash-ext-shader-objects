@@ -118,6 +118,21 @@ pub struct TextureDescriptor {
     usage: vk::ImageUsageFlags,
 }
 
+impl From<TextureDescriptor> for vk::ImageCreateInfo<'static> {
+    fn from(val: TextureDescriptor) -> Self {
+        vk::ImageCreateInfo::default()
+            .image_type(val.dimension)
+            .format(val.format)
+            .extent(val.size)
+            .mip_levels(val.mip_levels)
+            .array_layers(1)
+            .samples(val.sample_count)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(val.usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+    }
+}
+
 impl Image {
     pub fn new(
         device: &ash::Device,
@@ -155,6 +170,9 @@ impl Image {
     }
 
     pub fn create_view(&mut self, device: &ash::Device) -> vk::ImageView {
+        if self.view.is_some() {
+            return self.view.unwrap();
+        }
         let view = unsafe {
             device.create_image_view(
                 &vk::ImageViewCreateInfo {
