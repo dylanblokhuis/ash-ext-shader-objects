@@ -45,16 +45,16 @@ impl MaterialUniform {
     pub fn from_material(material: Material) -> Self {
         Self {
             base_color: material.base_color,
-            base_color_texture_index: 0,
+            base_color_texture_index: -1,
             emissive: material.emissive,
-            emissive_texture_index: 0,
+            emissive_texture_index: -1,
             perceptual_roughness: material.perceptual_roughness,
             metallic: material.metallic,
-            metallic_roughness_texture_index: 0,
+            metallic_roughness_texture_index: -1,
             reflectance: material.reflectance,
-            normal_map_texture_index: 0,
+            normal_map_texture_index: -1,
             flip_normal_map_y: material.flip_normal_map_y.into(),
-            occlusion_texture_index: 0,
+            occlusion_texture_index: -1,
             depth_bias: material.depth_bias,
         }
     }

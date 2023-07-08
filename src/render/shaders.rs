@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::CString,
+    path::Path,
 };
 
 use ash::vk::{self, ShaderCodeTypeEXT, ShaderCreateInfoEXT};
@@ -81,7 +82,7 @@ impl Shader {
 
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&descriptor_pool_sizes)
-            .max_sets(1);
+            .max_sets(2);
 
         let descriptor_pool = unsafe {
             render_instance
@@ -313,7 +314,28 @@ impl Shader {
             shaderc::TargetEnv::Vulkan,
             shaderc::EnvVersion::Vulkan1_2 as u32,
         );
+        options.set_optimization_level(shaderc::OptimizationLevel::Zero);
         options.set_generate_debug_info();
+        options.set_include_callback(|name, include_type, source_file, _depth| {
+            let path = if include_type == shaderc::IncludeType::Relative {
+                Path::new(Path::new(source_file).parent().unwrap()).join(name)
+            } else {
+                Path::new("shader").join(name)
+            };
+
+            println!("{:?}", path);
+
+            match std::fs::read_to_string(&path) {
+                Ok(glsl_code) => Ok(shaderc::ResolvedInclude {
+                    resolved_name: String::from(name),
+                    content: glsl_code,
+                }),
+                Err(err) => Err(format!(
+                    "Failed to resolve include to {} in {} (was looking for {:?}): {}",
+                    name, source_file, path, err
+                )),
+            }
+        });
 
         let spirv = compiler
             .compile_into_spirv(

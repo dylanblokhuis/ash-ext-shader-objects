@@ -1,5 +1,6 @@
 pub mod bundles;
 pub mod extract;
+pub mod global_descriptors;
 pub mod gltf;
 pub mod image;
 pub mod material;
@@ -9,18 +10,19 @@ pub mod primitives;
 pub mod shaders;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     mem::size_of,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
 
 use ash::vk::{
-    self, ImageCreateInfo, PrimitiveTopology, VertexInputAttributeDescription2EXT,
-    VertexInputBindingDescription2EXT, VertexInputRate,
+    self, DescriptorImageInfo, ImageCreateInfo, PrimitiveTopology,
+    VertexInputAttributeDescription2EXT, VertexInputBindingDescription2EXT, VertexInputRate,
 };
 use bevy::{
     app::{AppExit, AppLabel, SubApp},
+    asset::HandleId,
     ecs::{event::ManualEventReader, schedule::ScheduleLabel, system::SystemState},
     prelude::*,
     time::{create_time_channels, TimeSender},
@@ -38,6 +40,7 @@ use crate::{buffer::Buffer, ctx::ExampleBase};
 use self::{
     bundles::{Camera, MaterialMeshBundle},
     extract::Extract,
+    global_descriptors::GlobalDescriptorSet,
     image::Image,
     material::{Material, MaterialUniform},
     mesh::Mesh,
@@ -182,6 +185,7 @@ impl Plugin for RenderPlugin {
             })
             .unwrap(),
         );
+        let global_descriptor_set = GlobalDescriptorSet::new(&render_instance);
 
         let mut render_app = App::empty();
         render_app.add_simple_outer_schedule();
@@ -204,6 +208,7 @@ impl Plugin for RenderPlugin {
             .init_resource::<SequentialPassSystem>()
             .insert_resource(render_instance)
             .insert_resource(render_allocator)
+            .insert_resource(global_descriptor_set)
             .add_schedule(CoreSchedule::Main, render_schedule)
             // .add_system(extract_render_instance.in_schedule(ExtractSchedule))
             .add_system(extract_meshes.in_schedule(ExtractSchedule))
@@ -349,38 +354,6 @@ impl RenderAllocator {
     }
 }
 
-// fn extract_render_instance(
-//     mut commands: Commands,
-//     _marker: NonSend<NonSendMarker>,
-//     windows: Extract<Query<(Entity, &Window, &RawHandleWrapper, Option<&PrimaryWindow>)>>,
-//     vulkano_windows: Extract<NonSend<BevyVulkanoWindows>>,
-//     setup: Res<RenderResourcesSetup>,
-// ) {
-//     if setup.0 {
-//         return;
-//     }
-//     let Ok((entity, _, _, _)) = windows.get_single() else {
-//         return;
-//     };
-//     let Some(vulkano_window) = vulkano_windows.get_vulkano_window(entity) else {
-//         return;
-//     };
-
-//     let renderer = vulkano_window.renderer.clone();
-//     let allocator = Allocator::new(&AllocatorCreateDesc {
-//         instance: renderer.instance.clone(),
-//         device: renderer.device.clone(),
-//         physical_device: renderer.pdevice,
-//         debug_settings: Default::default(),
-//         buffer_device_address: true, // Ideally, check the BufferDeviceAddressFeatures struct.
-//         allocation_sizes: Default::default(),
-//     })
-//     .unwrap();
-//     commands.insert_resource(RenderAllocator(allocator));
-//     commands.insert_resource(RenderInstance(vulkano_window.renderer.clone()));
-//     commands.insert_resource(RenderResourcesSetup(true))
-// }
-
 #[derive(Debug)]
 struct GpuMesh {
     vertex_buffer: Buffer,
@@ -433,9 +406,6 @@ impl GpuMesh {
 #[derive(Resource, Default)]
 struct ProcessedRenderAssets {
     meshes: HashMap<Handle<Mesh>, GpuMesh>,
-    materials: HashMap<Handle<Material>, GpuMaterial>,
-    buffers: HashMap<&'static str, Buffer>,
-    textures: HashMap<Handle<Image>, crate::buffer::Image>,
 }
 
 #[tracing::instrument(skip_all)]
@@ -533,28 +503,37 @@ fn extract_objects(
     }
 }
 
-struct GpuMaterial {
-    material_buffer: Buffer,
-}
 #[tracing::instrument(skip_all)]
 fn extract_materials(
-    materials: Extract<Query<&Handle<Material>>>,
+    materials: Extract<Query<&Handle<Material>, Changed<Handle<Material>>>>,
     material_assets: Extract<Res<Assets<Material>>>,
     texture_assets: Extract<Res<Assets<Image>>>,
     render_instance: Res<RenderInstance>,
     mut render_allocator: ResMut<RenderAllocator>,
-    mut processed_assets: ResMut<ProcessedRenderAssets>,
+    mut global_descriptors: ResMut<GlobalDescriptorSet>,
 ) {
     for handle in materials.iter() {
-        if processed_assets.materials.contains_key(handle) {
-            continue;
+        let material = material_assets.get(handle).unwrap();
+        let mut material_buffer = MaterialUniform::from_material(material.clone());
+
+        if let Some(handle) = material.base_color_texture.as_ref() {
+            let img = texture_assets.get(handle).unwrap();
+            let mut texture = crate::buffer::Image::from_image_buffer(
+                &render_instance,
+                &mut render_allocator,
+                img.data.clone(),
+            );
+
+            let _ = texture.create_view(render_instance.device());
+            global_descriptors.textures.insert(handle.clone(), texture);
+            material_buffer.base_color_texture_index =
+                global_descriptors.get_texture_index(handle).unwrap() as i32;
         }
 
-        let material = material_assets.get(handle).unwrap();
         let buffer = {
             let mut buf = Buffer::new(
-                &render_instance.0.device,
-                &mut render_allocator.0,
+                render_instance.device(),
+                render_allocator.allocator(),
                 &vk::BufferCreateInfo {
                     size: std::mem::size_of::<material::MaterialUniform>() as u64,
                     usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
@@ -564,28 +543,11 @@ fn extract_materials(
                 MemoryLocation::CpuToGpu,
             );
 
-            buf.copy_from_slice(&[MaterialUniform::from_material(material.clone())], 0);
+            buf.copy_from_slice(&[material_buffer], 0);
             buf
         };
 
-        if let Some(base_color_texture) = material.base_color_texture.as_ref() {
-            let img = texture_assets.get(base_color_texture).unwrap();
-            let texture = crate::buffer::Image::from_image_buffer(
-                &render_instance,
-                &mut render_allocator,
-                img.data.clone(),
-            );
-            processed_assets
-                .textures
-                .insert(base_color_texture.clone(), texture);
-        }
-
-        processed_assets.materials.insert(
-            handle.clone(),
-            GpuMaterial {
-                material_buffer: buffer,
-            },
-        );
+        global_descriptors.buffers.insert(handle.id(), buffer);
     }
 }
 
@@ -600,12 +562,14 @@ struct CameraBuffer {
     inverse_proj: Mat4,
     world_position: Vec3,
 }
+pub static CAMERA_HANDLE: once_cell::sync::Lazy<HandleId> =
+    once_cell::sync::Lazy::new(|| HandleId::from(String::from("camera")));
 
 /// only runs whenever the camera component or transform component changes
 #[tracing::instrument(skip_all)]
 fn extract_camera_uniform(
     camera: Extract<Query<(&Camera, &Transform), Or<(Changed<Camera>, Changed<Transform>)>>>,
-    mut processed_assets: ResMut<ProcessedRenderAssets>,
+    mut global_descriptor_set: ResMut<GlobalDescriptorSet>,
     render_instance: Res<RenderInstance>,
     mut render_allocator: ResMut<RenderAllocator>,
 ) {
@@ -628,7 +592,7 @@ fn extract_camera_uniform(
         world_position: camera_transform.translation,
     };
 
-    if let Some(buffer) = processed_assets.buffers.get_mut("camera") {
+    if let Some(buffer) = global_descriptor_set.buffers.get_mut(&CAMERA_HANDLE) {
         buffer.copy_from_slice(&[uniform], 0);
     } else {
         let mut buffer: Buffer = Buffer::new(
@@ -641,7 +605,7 @@ fn extract_camera_uniform(
             MemoryLocation::CpuToGpu,
         );
         buffer.copy_from_slice(&[uniform], 0);
-        processed_assets.buffers.insert("camera", buffer);
+        global_descriptor_set.buffers.insert(*CAMERA_HANDLE, buffer);
     }
 }
 

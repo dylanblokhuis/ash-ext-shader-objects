@@ -77,9 +77,9 @@ pub fn camera_controller(
     }
 
     if let Ok((mut transform, mut options)) = query.get_single_mut() {
-        let mut camera_transform = *transform;
+        // let mut camera_transform = *transform;
         if !options.initialized {
-            let (_roll, yaw, pitch) = camera_transform.rotation.to_euler(EulerRot::ZYX);
+            let (_roll, yaw, pitch) = transform.rotation.to_euler(EulerRot::ZYX);
             options.yaw = yaw;
             options.pitch = pitch;
             options.initialized = true;
@@ -139,19 +139,19 @@ pub fn camera_controller(
                 options.velocity = Vec3::ZERO;
             }
         }
-        let forward = camera_transform.forward();
-        let right = camera_transform.right();
+        let forward = transform.forward();
+        let right = transform.right();
         let translation_delta = options.velocity.x * dt * right
             + options.velocity.y * dt * Vec3::Y
             + options.velocity.z * dt * forward;
         let mut scroll_translation = Vec3::ZERO;
         if options.orbit_mode && options.scroll_wheel_speed > 0.0 {
             scroll_translation = scroll_distance
-                * camera_transform.translation.distance(options.orbit_focus)
+                * transform.translation.distance(options.orbit_focus)
                 * options.scroll_wheel_speed
                 * forward;
         }
-        camera_transform.translation += translation_delta + scroll_translation;
+        transform.translation += translation_delta + scroll_translation;
         options.orbit_focus += translation_delta;
 
         // Handle mouse input
@@ -177,22 +177,18 @@ pub fn camera_controller(
             );
 
             // Apply look update
-            camera_transform.rotation = Quat::from_euler(EulerRot::ZYX, 0.0, yaw, pitch);
+            transform.rotation = Quat::from_euler(EulerRot::ZYX, 0.0, yaw, pitch);
             options.pitch = pitch;
             options.yaw = yaw;
 
             if options.orbit_mode {
-                let rot_matrix = Mat3::from_quat(camera_transform.rotation);
-                camera_transform.translation = options.orbit_focus
+                let rot_matrix = Mat3::from_quat(transform.rotation);
+                transform.translation = options.orbit_focus
                     + rot_matrix.mul_vec3(Vec3::new(
                         0.0,
                         0.0,
-                        options.orbit_focus.distance(camera_transform.translation),
+                        options.orbit_focus.distance(transform.translation),
                     ));
-            }
-
-            if !transform.eq(&camera_transform) {
-                *transform = camera_transform;
             }
         }
     }

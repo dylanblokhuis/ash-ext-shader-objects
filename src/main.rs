@@ -1,5 +1,8 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
+use ash::vk::Filter;
+use ash::vk::SamplerAddressMode;
+use ash::vk::SamplerMipmapMode;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -7,9 +10,11 @@ use bevy::window::close_on_esc;
 use bevy::window::WindowMode;
 use camera_controller::CameraController;
 use camera_controller::CameraControllerPlugin;
+use ctx::SamplerDesc;
 use render::bundles::Camera;
 use render::bundles::CameraBundle;
 use render::bundles::MaterialMeshBundle;
+use render::image::Image;
 use render::material::Material;
 use render::mesh::Mesh;
 use render::primitives;
@@ -59,6 +64,7 @@ fn spawn_stuff(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<Material>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let _ = info_span!("Spawning objects");
     for x in 0..10 {
@@ -66,7 +72,7 @@ fn spawn_stuff(
             commands.spawn(MaterialMeshBundle {
                 mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
                 material: materials.add(Material {
-                    base_color: Vec3::new(1.0, 0.0, 0.0),
+                    base_color: Vec3::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
                     ..Default::default()
                 }),
                 transform: Transform::from_translation(Vec3::new(
@@ -78,29 +84,37 @@ fn spawn_stuff(
         }
     }
 
-    commands.spawn(MaterialMeshBundle {
-        mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-        material: materials.add(Material {
-            base_color: Vec3::new(1.0, 0.0, 0.0),
-            ..Default::default()
-        }),
-        transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-    });
+    // commands.spawn(MaterialMeshBundle {
+    //     mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
+    //     material: materials.add(Material {
+    //         base_color: Vec3::new(1.0, 0.0, 0.0),
+    //         ..Default::default()
+    //     }),
+    //     transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+    // });
 
-    commands.spawn(MaterialMeshBundle {
-        mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-        transform: Transform::from_translation(Vec3::new(5.0, 5.0, 5.0)),
-        material: materials.add(Material {
-            base_color: Vec3::new(1.0, 1.0, 0.0),
-            ..Default::default()
-        }),
-    });
+    // commands.spawn(MaterialMeshBundle {
+    //     mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
+    //     transform: Transform::from_translation(Vec3::new(5.0, 5.0, 5.0)),
+    //     material: materials.add(Material {
+    //         base_color: Vec3::new(1.0, 1.0, 0.0),
+    //         ..Default::default()
+    //     }),
+    // });
 
     commands.spawn(MaterialMeshBundle {
         mesh: meshes.add(primitives::Cube::new(2.0).into()),
-        transform: Transform::from_translation(Vec3::new(1.0, 1.0, 1.0)),
+        transform: Transform::from_translation(Vec3::new(-10.0, 1.0, 1.0)),
         material: materials.add(Material {
             base_color: Vec3::new(1.0, 0.0, 0.0),
+            base_color_texture: Some(images.add(Image {
+                data: image::load_from_memory(include_bytes!("../images/public.png")).unwrap(),
+                sampler_descriptor: SamplerDesc {
+                    texel_filter: Filter::LINEAR,
+                    mipmap_mode: SamplerMipmapMode::LINEAR,
+                    address_modes: SamplerAddressMode::REPEAT,
+                },
+            })),
             ..Default::default()
         }),
     });

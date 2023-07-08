@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     extract::Extract, material::Material, mesh::Mesh, shaders::Shader, GpuMesh,
-    ProcessedRenderAssets, RenderAllocator, RenderInstance, SequentialNode,
+    ProcessedRenderAssets, RenderAllocator, RenderInstance, SequentialNode, CAMERA_HANDLE,
 };
 
 #[derive(Debug)]
@@ -22,21 +22,14 @@ pub struct PresentNode {
     shaders: Vec<ShaderEXT>,
     descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
-    uniform: Buffer,
-    texture: Image,
-}
-
-#[derive(Clone, Debug, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
-#[repr(C, align(16))]
-struct Uniform {
-    camera_pointer: u64,
-    _pad: [f32; 2],
 }
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PushConstants {
     model: Mat4,
+    material_index: u64,
+    camera_index: u64,
 }
 
 impl PresentNode {
@@ -54,10 +47,10 @@ impl PresentNode {
         );
 
         let (descriptor_set_layouts, set_layout_info) =
-            frag.create_descriptor_set_layouts(render_instance);
+            vert.create_descriptor_set_layouts(render_instance);
 
         let descriptor_sets =
-            frag.create_descriptor_sets(render_instance, &descriptor_set_layouts, &set_layout_info);
+            vert.create_descriptor_sets(render_instance, &descriptor_set_layouts, &set_layout_info);
 
         println!("{:?}", set_layout_info);
 
@@ -91,28 +84,10 @@ impl PresentNode {
                 .unwrap()
         };
 
-        let uniform = Buffer::new(
-            render_instance.device(),
-            render_allocator.allocator(),
-            &vk::BufferCreateInfo::default()
-                .size(size_of::<Uniform>() as DeviceSize)
-                .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE),
-            MemoryLocation::CpuToGpu,
-        );
-
-        let texture = Image::from_image_buffer(
-            render_instance,
-            render_allocator,
-            image::load_from_memory(include_bytes!("../../../images/public.png")).unwrap(),
-        );
-
         Self {
             shaders,
             descriptor_sets,
             pipeline_layout,
-            uniform,
-            texture,
         }
     }
 }
@@ -120,57 +95,28 @@ impl PresentNode {
 impl SequentialNode for PresentNode {
     #[tracing::instrument(name = "PresentNode::update", skip_all)]
     fn update(&mut self, world: &mut bevy::prelude::World) {
-        let assets = world.resource::<ProcessedRenderAssets>();
-        if assets.buffers.contains_key("camera") && !self.uniform.has_been_written_to {
-            println!("Updating uniform");
-            let camera = assets.buffers.get("camera").unwrap();
-            self.uniform.copy_from_slice(
-                &[Uniform {
-                    camera_pointer: camera.device_addr,
-                    ..Default::default()
-                }],
-                0,
-            );
-
-            let uniform_buffer_descriptor = &[vk::DescriptorBufferInfo::default()
-                .buffer(self.uniform.buffer)
-                .range(self.uniform.size)
-                .offset(0)];
-
-            let texture_binding = &[vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(
-                    self.texture
-                        .create_view(world.resource::<RenderInstance>().device()),
-                )
-                .sampler(world.resource::<RenderInstance>().0.get_default_sampler())];
-            let write_desc_sets = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[0])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(uniform_buffer_descriptor),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[0])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .dst_array_element(0)
-                    .image_info(texture_binding),
-            ];
-
-            unsafe {
-                world
-                    .resource::<RenderInstance>()
-                    .device()
-                    .update_descriptor_sets(&write_desc_sets, &[]);
-            };
+        if !world
+            .resource_mut::<super::global_descriptors::GlobalDescriptorSet>()
+            .is_changed()
+        {
+            return;
         }
+
+        world.resource_scope(
+            |world, mut global_descriptors: Mut<super::global_descriptors::GlobalDescriptorSet>| {
+                global_descriptors.update_descriptor_set(
+                    self.descriptor_sets[0],
+                    world.resource::<RenderInstance>(),
+                )
+            },
+        );
     }
 
     #[tracing::instrument(name = "PresentNode::run", skip_all)]
     fn run(&self, world: &mut bevy::prelude::World) -> anyhow::Result<()> {
-        let mut objects = world.query::<(&Handle<Mesh>, &Transform)>();
+        let mut objects = world.query::<(&Handle<Mesh>, &Handle<Material>, &Transform)>();
         let assets = world.resource::<ProcessedRenderAssets>();
+        let global_descriptors = world.resource::<super::global_descriptors::GlobalDescriptorSet>();
 
         let render_instance = world.resource::<RenderInstance>();
         let objects_count = objects.iter(world).count();
@@ -338,13 +284,10 @@ impl SequentialNode for PresentNode {
                             .expect("Begin commandbuffer");
                     });
 
-                let chunk_amount = 20;
-                // let chunked_handles: Vec<Vec<&Handle<Mesh>>> = objects.
-
                 let queue = crossbeam_queue::ArrayQueue::<usize>::new(objects_count);
 
                 render_instance.0.command_thread_pool.scope(|scope| {
-                    for (mesh_handle, transform) in objects.iter(world) {
+                    for (mesh_handle, material_handle, transform) in objects.iter(world) {
                         scope.spawn(|_| {
                             let thread_index = rayon::current_thread_index().unwrap();
                             let command_buffers = renderer.threaded_command_buffers.read().unwrap();
@@ -359,6 +302,16 @@ impl SequentialNode for PresentNode {
                                 0,
                                 bytemuck::bytes_of(&PushConstants {
                                     model: transform.compute_matrix(),
+                                    camera_index: global_descriptors
+                                        .buffers
+                                        .get(&CAMERA_HANDLE)
+                                        .unwrap()
+                                        .device_addr,
+                                    material_index: global_descriptors
+                                        .buffers
+                                        .get(&material_handle.id())
+                                        .unwrap()
+                                        .device_addr,
                                 }),
                             );
 
