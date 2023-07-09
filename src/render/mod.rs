@@ -89,29 +89,43 @@ pub enum RenderSet {
     CleanupFlush,
 }
 
-impl RenderSet {
+#[derive(ScheduleLabel, Debug, Hash, PartialEq, Eq, Clone)]
+pub struct Render;
+
+impl Render {
     /// Sets up the base structure of the rendering [`Schedule`].
     ///
     /// The sets defined in this enum are configured to run in order,
-    /// and a copy of [`apply_system_buffers`] is inserted into each `*Flush` set.
+    /// and a copy of [`apply_deferred`] is inserted into each `*Flush` set.
     pub fn base_schedule() -> Schedule {
         use RenderSet::*;
 
         let mut schedule = Schedule::new();
 
         // Create "stage-like" structure using buffer flushes + ordering
-        schedule.add_system(apply_system_buffers.in_set(PrepareFlush));
-        schedule.add_system(apply_system_buffers.in_set(QueueFlush));
-        schedule.add_system(apply_system_buffers.in_set(PhaseSortFlush));
-        schedule.add_system(apply_system_buffers.in_set(RenderFlush));
-        schedule.add_system(apply_system_buffers.in_set(CleanupFlush));
-
-        schedule.configure_set(ExtractCommands.before(Prepare));
-        schedule.configure_set(Prepare.after(ExtractCommands).before(PrepareFlush));
-        schedule.configure_set(Queue.after(PrepareFlush).before(QueueFlush));
-        schedule.configure_set(PhaseSort.after(QueueFlush).before(PhaseSortFlush));
-        schedule.configure_set(Render.after(PhaseSortFlush).before(RenderFlush));
-        schedule.configure_set(Cleanup.after(RenderFlush).before(CleanupFlush));
+        schedule.add_systems((
+            apply_deferred.in_set(PrepareFlush),
+            apply_deferred.in_set(QueueFlush),
+            apply_deferred.in_set(PhaseSortFlush),
+            apply_deferred.in_set(RenderFlush),
+            apply_deferred.in_set(CleanupFlush),
+        ));
+        schedule.configure_sets(
+            (
+                ExtractCommands,
+                Prepare,
+                PrepareFlush,
+                Queue,
+                QueueFlush,
+                PhaseSort,
+                PhaseSortFlush,
+                Render,
+                RenderFlush,
+                Cleanup,
+                CleanupFlush,
+            )
+                .chain(),
+        );
 
         schedule
     }
@@ -188,34 +202,33 @@ impl Plugin for RenderPlugin {
         let global_descriptor_set = GlobalDescriptorSet::new(&render_instance);
 
         let mut render_app = App::empty();
-        render_app.add_simple_outer_schedule();
-        let mut render_schedule = RenderSet::base_schedule();
+        render_app.main_schedule_label = Box::new(Render);
 
-        // Prepare the schedule which extracts data from the main world to the render world
-        render_app.edit_schedule(ExtractSchedule, |schedule| {
-            schedule.set_apply_final_buffers(false);
-        });
-
-        // This set applies the commands from the extract stage while the render schedule
-        // is running in parallel with the main app.
-        render_schedule.add_system(apply_extract_commands.in_set(RenderSet::ExtractCommands));
-        render_schedule.add_system(render_system.in_set(RenderSet::Render));
-        // render_schedule.add_system(World::clear_entities.in_set(RenderSet::Cleanup));
+        let mut extract_schedule = Schedule::new();
+        extract_schedule.set_apply_final_deferred(false);
 
         render_app
+            .add_schedule(ExtractSchedule, extract_schedule)
+            .add_schedule(Render, Render::base_schedule())
+            .add_systems(
+                Render,
+                (
+                    apply_extract_commands.in_set(RenderSet::ExtractCommands),
+                    render_system.in_set(RenderSet::Render),
+                ),
+            )
             .init_non_send_resource::<NonSendMarker>()
             .init_resource::<ProcessedRenderAssets>()
             .init_resource::<SequentialPassSystem>()
             .insert_resource(render_instance)
             .insert_resource(render_allocator)
             .insert_resource(global_descriptor_set)
-            .add_schedule(CoreSchedule::Main, render_schedule)
-            .add_system(extract_meshes.in_schedule(ExtractSchedule))
-            .add_system(extract_materials.in_schedule(ExtractSchedule))
-            .add_system(extract_camera_uniform.in_schedule(ExtractSchedule))
-            .add_system(extract_objects.in_schedule(ExtractSchedule))
-            .add_system(extract_textures_from_materials.in_schedule(ExtractSchedule))
-            .add_system(basic_renderer_setup.in_set(RenderSet::Prepare));
+            .add_systems(ExtractSchedule, extract_meshes)
+            .add_systems(ExtractSchedule, extract_materials)
+            .add_systems(ExtractSchedule, extract_camera_uniform)
+            .add_systems(ExtractSchedule, extract_objects)
+            .add_systems(ExtractSchedule, extract_textures_from_materials)
+            .add_systems(Render, basic_renderer_setup.in_set(RenderSet::Prepare));
 
         let (sender, receiver) = create_time_channels();
         app.insert_resource(receiver);
@@ -278,7 +291,7 @@ fn apply_extract_commands(render_world: &mut World) {
         schedules
             .get_mut(&ExtractSchedule)
             .unwrap()
-            .apply_system_buffers(render_world);
+            .apply_deferred(render_world);
     });
 }
 

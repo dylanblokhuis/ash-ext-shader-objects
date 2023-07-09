@@ -51,12 +51,12 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugin(RenderPlugin::default())
-        .add_plugin(LogDiagnosticsPlugin::default())
-        .add_plugin(FrameTimeDiagnosticsPlugin)
-        .add_plugin(CameraControllerPlugin)
-        .add_system(close_on_esc)
-        .add_startup_system(spawn_stuff)
+        .add_plugins(RenderPlugin::default())
+        .add_plugins(LogDiagnosticsPlugin::default())
+        .add_plugins(FrameTimeDiagnosticsPlugin)
+        .add_plugins(CameraControllerPlugin)
+        .add_systems(Update, close_on_esc)
+        .add_systems(Startup, spawn_stuff)
         .run();
 }
 
@@ -67,22 +67,22 @@ fn spawn_stuff(
     asset_server: Res<AssetServer>,
 ) {
     let _ = info_span!("Spawning objects");
-    for x in 0..100 {
-        for y in 0..100 {
-            commands.spawn(MaterialMeshBundle {
-                mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-                material: materials.add(Material {
-                    base_color: Vec3::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
-                    ..Default::default()
-                }),
-                transform: Transform::from_translation(Vec3::new(
-                    x as f32 * 2.0,
-                    y as f32 * 2.0,
-                    x as f32 * 2.0,
-                )),
-            });
-        }
-    }
+    // for x in 0..100 {
+    //     for y in 0..100 {
+    //         commands.spawn(MaterialMeshBundle {
+    //             mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
+    //             material: materials.add(Material {
+    //                 base_color: Vec3::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
+    //                 ..Default::default()
+    //             }),
+    //             transform: Transform::from_translation(Vec3::new(
+    //                 x as f32 * 2.0,
+    //                 y as f32 * 2.0,
+    //                 x as f32 * 2.0,
+    //             )),
+    //         });
+    //     }
+    // }
 
     commands.spawn(MaterialMeshBundle {
         mesh: meshes.add(primitives::Cube::new(2.0).into()),

@@ -1,10 +1,10 @@
 use ash::vk::CullModeFlags;
 use bevy::prelude::*;
-use bevy::reflect::TypeUuid;
+use bevy::reflect::{TypePath, TypeUuid};
 
 use super::image::Image;
 
-#[derive(Debug, TypeUuid, Clone)]
+#[derive(Debug, TypeUuid, Clone, TypePath)]
 #[uuid = "c94c1494-85e5-4a4c-8575-48baadfef3ab"]
 pub struct Material {
     pub base_color: Vec3,

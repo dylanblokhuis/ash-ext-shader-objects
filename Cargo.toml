@@ -45,4 +45,4 @@ tracing = ["tracing-tracy", "tracing-subscriber"]
 [dependencies.bevy]
 default-features = false
 features = ["bevy_asset", "bevy_winit"]
-version = "0.10"
+version = "0.11"

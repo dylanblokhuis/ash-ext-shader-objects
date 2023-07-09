@@ -1,7 +1,7 @@
 use ash::vk;
-use bevy::reflect::TypeUuid;
+use bevy::reflect::{TypePath, TypeUuid};
 
-#[derive(Debug, TypeUuid, Clone)]
+#[derive(Debug, TypeUuid, Clone, TypePath)]
 #[uuid = "8ecbac0f-f545-4473-ad43-e1f4243af51e"]
 pub struct Mesh {
     pub primitive_topology: vk::PrimitiveTopology,
