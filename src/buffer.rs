@@ -213,14 +213,14 @@ impl Image {
         render_instance: &RenderInstance,
         render_allocator: &mut RenderAllocator,
         image: DynamicImage,
+        format: vk::Format,
     ) -> Self {
-        let rgba8 = image.to_rgba8();
         let texture = Self::new(
             render_instance.device(),
             render_allocator.allocator(),
             &vk::ImageCreateInfo::default()
                 .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::R8G8B8A8_SRGB)
+                .format(format)
                 .extent(vk::Extent3D {
                     width: image.width(),
                     height: image.height(),
@@ -235,16 +235,22 @@ impl Image {
         );
 
         {
+            // let image_data = match format {
+            //     vk::Format::R8G8B8A8_SRGB => image.to_rgba8().into_raw(),
+            //     vk::Format::R8G8B8_SRGB => image.to_rgb8().into_raw(),
+            //     _ => unimplemented!("Format not supported yet"),
+            // };
+            let image_data = image.to_rgba8().into_raw();
             let mut img_buffer = Buffer::new(
                 render_instance.device(),
                 render_allocator.allocator(),
                 &vk::BufferCreateInfo::default()
-                    .size(rgba8.len() as DeviceSize)
+                    .size(image_data.len() as DeviceSize)
                     .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE),
                 MemoryLocation::CpuToGpu,
             );
-            img_buffer.copy_from_slice(&rgba8, 0);
+            img_buffer.copy_from_slice(&image_data, 0);
 
             render_instance
                 .0

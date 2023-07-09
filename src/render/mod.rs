@@ -162,7 +162,7 @@ impl Plugin for RenderPlugin {
             .add_asset::<Mesh>()
             .add_asset::<Material>()
             .add_asset::<crate::render::image::Image>()
-            .add_system(cleanup_on_exit);
+            .add_asset_loader(crate::render::image::ImageTextureLoader);
 
         let mut system_state: SystemState<
             Query<(&RawHandleWrapper, &Window), With<PrimaryWindow>>,
@@ -200,7 +200,7 @@ impl Plugin for RenderPlugin {
         // is running in parallel with the main app.
         render_schedule.add_system(apply_extract_commands.in_set(RenderSet::ExtractCommands));
         render_schedule.add_system(render_system.in_set(RenderSet::Render));
-        render_schedule.add_system(World::clear_entities.in_set(RenderSet::Cleanup));
+        // render_schedule.add_system(World::clear_entities.in_set(RenderSet::Cleanup));
 
         render_app
             .init_non_send_resource::<NonSendMarker>()
@@ -210,39 +210,42 @@ impl Plugin for RenderPlugin {
             .insert_resource(render_allocator)
             .insert_resource(global_descriptor_set)
             .add_schedule(CoreSchedule::Main, render_schedule)
-            // .add_system(extract_render_instance.in_schedule(ExtractSchedule))
             .add_system(extract_meshes.in_schedule(ExtractSchedule))
             .add_system(extract_materials.in_schedule(ExtractSchedule))
             .add_system(extract_camera_uniform.in_schedule(ExtractSchedule))
             .add_system(extract_objects.in_schedule(ExtractSchedule))
+            .add_system(extract_textures_from_materials.in_schedule(ExtractSchedule))
             .add_system(basic_renderer_setup.in_set(RenderSet::Prepare));
 
         let (sender, receiver) = create_time_channels();
         app.insert_resource(receiver);
         render_app.insert_resource(sender);
 
-        app.insert_sub_app(RenderApp, SubApp::new(render_app, move |main_world, render_app| {
-            // reserve all existing main world entities for use in render_app
-            // they can only be spawned using `get_or_spawn()`
-            let total_count = main_world.entities().total_count();
+        app.insert_sub_app(
+            RenderApp,
+            SubApp::new(render_app, move |main_world, render_app| {
+                // reserve all existing main world entities for use in render_app
+                // they can only be spawned using `get_or_spawn()`
+                // let total_count = main_world.entities().total_count();
 
-            assert_eq!(
-                render_app.world.entities().len(),
-                0,
-                "An entity was spawned after the entity list was cleared last frame and before the extract schedule began. This is not supported",
-            );
+                // assert_eq!(
+                //     render_app.world.entities().len(),
+                //     0,
+                //     "An entity was spawned after the entity list was cleared last frame and before the extract schedule began. This is not supported",
+                // );
 
-            // This is safe given the clear_entities call in the past frame and the assert above
-            unsafe {
-                render_app
-                    .world
-                    .entities_mut()
-                    .flush_and_reserve_invalid_assuming_no_entities(total_count);
-            }
+                // // This is safe given the clear_entities call in the past frame and the assert above
+                // unsafe {
+                //     render_app
+                //         .world
+                //         .entities_mut()
+                //         .flush_and_reserve_invalid_assuming_no_entities(total_count);
+                // }
 
-        // run extract schedule
-        extract(main_world, render_app);
-    }));
+                // run extract schedule
+                extract(main_world, render_app);
+            }),
+        );
     }
 }
 
@@ -408,18 +411,18 @@ struct ProcessedRenderAssets {
     meshes: HashMap<Handle<Mesh>, GpuMesh>,
 }
 
-#[tracing::instrument(skip_all)]
 fn extract_meshes(
-    objects_with_mesh: Extract<Query<&Handle<Mesh>>>,
+    objects_with_mesh: Extract<Query<&Handle<Mesh>, Changed<Handle<Mesh>>>>,
     mesh_assets: Extract<Res<Assets<Mesh>>>,
     render_instance: Res<RenderInstance>,
     mut render_allocator: ResMut<RenderAllocator>,
     mut processed_assets: ResMut<ProcessedRenderAssets>,
 ) {
     for mesh_handle in objects_with_mesh.iter() {
-        if processed_assets.meshes.contains_key(mesh_handle) {
-            continue;
-        }
+        let _ = info_span!("Extracting mesh").entered();
+        // if processed_assets.meshes.contains_key(mesh_handle) {
+        //     continue;
+        // }
         let mesh = mesh_assets.get(mesh_handle).unwrap();
         let vertex_buffer = {
             let mut buf = Buffer::new(
@@ -489,21 +492,147 @@ fn extract_meshes(
     // }
 }
 
-#[tracing::instrument(skip_all)]
 fn extract_objects(
     mut commands: Commands,
-    objects: Extract<Query<(Entity, &Handle<Mesh>, &Handle<Material>, &Transform)>>,
+    objects: Extract<
+        Query<(Entity, &Handle<Mesh>, &Handle<Material>, &Transform), Changed<Handle<Mesh>>>,
+    >,
 ) {
+    if objects.iter().count() == 0 {
+        return;
+    }
+    let _ = info_span!("Extracting objects").entered();
+    let mut values = Vec::new();
     for (entity, mesh_handle, material_handle, transform) in objects.iter() {
-        commands.get_or_spawn(entity).insert(MaterialMeshBundle {
-            mesh: mesh_handle.clone(),
-            material: material_handle.clone(),
-            transform: *transform,
-        });
+        values.push((
+            entity,
+            MaterialMeshBundle {
+                mesh: mesh_handle.clone(),
+                material: material_handle.clone(),
+                transform: *transform,
+            },
+        ));
+    }
+    commands.insert_or_spawn_batch(values);
+}
+
+fn extract_textures_from_materials(
+    material_assets: Extract<Res<Assets<Material>>>,
+    texture_assets: Extract<Res<Assets<Image>>>,
+    mut ev_asset: Extract<EventReader<AssetEvent<Image>>>,
+    render_instance: Res<RenderInstance>,
+    mut render_allocator: ResMut<RenderAllocator>,
+    mut global_descriptors: ResMut<GlobalDescriptorSet>,
+) {
+    for ev in ev_asset.iter() {
+        match ev {
+            AssetEvent::Created { handle } => {
+                let material = material_assets
+                    .iter()
+                    .map(|(material_handle_id, material)| {
+                        if let Some(base_color_texture) = material.base_color_texture.as_ref() {
+                            if base_color_texture == handle {
+                                return Some((
+                                    material_handle_id,
+                                    base_color_texture,
+                                    offset_of!(MaterialUniform, base_color_texture_index),
+                                ));
+                            }
+                        }
+
+                        if let Some(emissive_texture) = material.emissive_texture.as_ref() {
+                            if emissive_texture == handle {
+                                return Some((
+                                    material_handle_id,
+                                    emissive_texture,
+                                    offset_of!(MaterialUniform, emissive_texture_index),
+                                ));
+                            }
+                        }
+
+                        if let Some(occlusion_texture) = material.occlusion_texture.as_ref() {
+                            if occlusion_texture == handle {
+                                return Some((
+                                    material_handle_id,
+                                    occlusion_texture,
+                                    offset_of!(MaterialUniform, occlusion_texture_index),
+                                ));
+                            }
+                        }
+
+                        if let Some(normal_map_texture) = material.normal_map_texture.as_ref() {
+                            if normal_map_texture == handle {
+                                return Some((
+                                    material_handle_id,
+                                    normal_map_texture,
+                                    offset_of!(MaterialUniform, normal_map_texture_index),
+                                ));
+                            }
+                        }
+
+                        if let Some(metallic_roughness_texture) =
+                            material.metallic_roughness_texture.as_ref()
+                        {
+                            if metallic_roughness_texture == handle {
+                                return Some((
+                                    material_handle_id,
+                                    metallic_roughness_texture,
+                                    offset_of!(MaterialUniform, metallic_roughness_texture_index),
+                                ));
+                            }
+                        }
+
+                        None
+                    })
+                    .find(|x| x.is_some())
+                    .flatten();
+
+                let Some((material_handle_id, texture_handle, bytes_offset))  = material else {
+                    continue;
+                };
+
+                let texture = texture_assets.get(texture_handle).unwrap();
+                global_descriptors.textures.insert(
+                    texture_handle.clone(),
+                    crate::buffer::Image::from_image_buffer(
+                        &render_instance,
+                        &mut render_allocator,
+                        texture.data.clone(),
+                        texture.format,
+                    ),
+                );
+                let index = global_descriptors
+                    .get_texture_index(texture_handle)
+                    .unwrap() as i32;
+
+                if let Some(buffer) = global_descriptors.buffers.get_mut(&material_handle_id) {
+                    buffer.copy_from_slice(&[index], bytes_offset);
+                } else {
+                    let mut buffer: Buffer = Buffer::new(
+                        render_instance.device(),
+                        render_allocator.allocator(),
+                        &vk::BufferCreateInfo::default()
+                            .size(std::mem::size_of::<material::MaterialUniform>() as u64)
+                            .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
+                            .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                        MemoryLocation::CpuToGpu,
+                    );
+                    buffer.copy_from_slice(&[index], bytes_offset);
+                    global_descriptors
+                        .buffers
+                        .insert(material_handle_id, buffer);
+                }
+            }
+            AssetEvent::Modified { handle } => {
+                // an image was modified
+            }
+            AssetEvent::Removed { handle } => {
+                // an image was unloaded
+            }
+        }
     }
 }
 
-#[tracing::instrument(skip_all)]
 fn extract_materials(
     materials: Extract<Query<&Handle<Material>, Changed<Handle<Material>>>>,
     material_assets: Extract<Res<Assets<Material>>>,
@@ -513,41 +642,48 @@ fn extract_materials(
     mut global_descriptors: ResMut<GlobalDescriptorSet>,
 ) {
     for handle in materials.iter() {
+        let _ = info_span!("Extracting material").entered();
         let material = material_assets.get(handle).unwrap();
-        let mut material_buffer = MaterialUniform::from_material(material.clone());
+        let mut material_buffer = MaterialUniform::from_material(material);
 
         if let Some(handle) = material.base_color_texture.as_ref() {
-            let img = texture_assets.get(handle).unwrap();
-            let mut texture = crate::buffer::Image::from_image_buffer(
-                &render_instance,
-                &mut render_allocator,
-                img.data.clone(),
-            );
+            if let Some(img) = texture_assets.get(handle) {
+                let mut texture = crate::buffer::Image::from_image_buffer(
+                    &render_instance,
+                    &mut render_allocator,
+                    img.data.clone(),
+                    img.format,
+                );
 
-            let _ = texture.create_view(render_instance.device());
-            global_descriptors.textures.insert(handle.clone(), texture);
-            material_buffer.base_color_texture_index =
-                global_descriptors.get_texture_index(handle).unwrap() as i32;
+                let _ = texture.create_view(render_instance.device());
+                global_descriptors.textures.insert(handle.clone(), texture);
+                material_buffer.base_color_texture_index =
+                    global_descriptors.get_texture_index(handle).unwrap() as i32;
+            }
         }
 
-        let buffer = {
-            let mut buf = Buffer::new(
-                render_instance.device(),
-                render_allocator.allocator(),
-                &vk::BufferCreateInfo {
-                    size: std::mem::size_of::<material::MaterialUniform>() as u64,
-                    usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
-                    sharing_mode: vk::SharingMode::EXCLUSIVE,
-                    ..Default::default()
-                },
-                MemoryLocation::CpuToGpu,
-            );
+        if let Some(buffer) = global_descriptors.buffers.get_mut(&handle.id()) {
+            buffer.copy_from_slice(&[material_buffer], 0);
+        } else {
+            let buffer = {
+                let mut buf = Buffer::new(
+                    render_instance.device(),
+                    render_allocator.allocator(),
+                    &vk::BufferCreateInfo {
+                        size: std::mem::size_of::<material::MaterialUniform>() as u64,
+                        usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        sharing_mode: vk::SharingMode::EXCLUSIVE,
+                        ..Default::default()
+                    },
+                    MemoryLocation::CpuToGpu,
+                );
 
-            buf.copy_from_slice(&[material_buffer], 0);
-            buf
-        };
+                buf.copy_from_slice(&[material_buffer], 0);
+                buf
+            };
 
-        global_descriptors.buffers.insert(handle.id(), buffer);
+            global_descriptors.buffers.insert(handle.id(), buffer);
+        }
     }
 }
 
@@ -566,7 +702,6 @@ pub static CAMERA_HANDLE: once_cell::sync::Lazy<HandleId> =
     once_cell::sync::Lazy::new(|| HandleId::from(String::from("camera")));
 
 /// only runs whenever the camera component or transform component changes
-#[tracing::instrument(skip_all)]
 fn extract_camera_uniform(
     camera: Extract<Query<(&Camera, &Transform), Or<(Changed<Camera>, Changed<Transform>)>>>,
     mut global_descriptor_set: ResMut<GlobalDescriptorSet>,
@@ -576,6 +711,7 @@ fn extract_camera_uniform(
     let Ok((camera, camera_transform)) = camera.get_single() else {
         return;
     };
+    let _ = info_span!("Extracting camera uniform").entered();
 
     let view = camera_transform.compute_matrix();
     let inverse_view = view.inverse();
@@ -607,16 +743,6 @@ fn extract_camera_uniform(
         buffer.copy_from_slice(&[uniform], 0);
         global_descriptor_set.buffers.insert(*CAMERA_HANDLE, buffer);
     }
-}
-
-fn cleanup_on_exit(app_exit_events: Res<Events<AppExit>>) {
-    let mut app_exit_event_reader = ManualEventReader::<AppExit>::default();
-    if let Some(exit) = app_exit_event_reader.iter(&app_exit_events).last() {
-        println!("cleanup!!!!!!!!");
-    }
-    // for _ in events.iter() {
-    //     println!("cleanup!!!!!!!!");
-    // }
 }
 
 fn basic_renderer_setup(

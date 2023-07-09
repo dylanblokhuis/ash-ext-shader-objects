@@ -144,21 +144,25 @@ impl Shader {
                 let mut set_layout_create_flags = vk::DescriptorSetLayoutCreateFlags::empty();
 
                 for (binding_index, binding) in set.iter() {
-                    if binding.binding_count == BindingCount::Unbounded {
-                        binding_flags[bindings.len()] =
-                            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-                                | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING
-                                | vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                                | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
+                    // if binding.name.starts_with("u_") {
+                    //     binding_flags[bindings.len()] =
+                    //         vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                    //             | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING
+                    //             | vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                    //             | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT;
 
-                        set_layout_create_flags |=
-                            vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL;
-                    }
+                    //     set_layout_create_flags |=
+                    //         vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL;
+                    // }
 
-                    let descriptor_count: u32 = match binding.binding_count {
-                        BindingCount::One => 1,
-                        BindingCount::StaticSized(size) => size.try_into().unwrap(),
-                        BindingCount::Unbounded => render_instance.0.max_descriptor_count,
+                    let descriptor_count: u32 = if binding.name.starts_with("u_") {
+                        render_instance.0.max_descriptor_count
+                    } else {
+                        match binding.binding_count {
+                            BindingCount::One => 1,
+                            BindingCount::StaticSized(size) => size.try_into().unwrap(),
+                            BindingCount::Unbounded => render_instance.0.max_descriptor_count,
+                        }
                     };
 
                     match binding.ty {
@@ -322,8 +326,6 @@ impl Shader {
             } else {
                 Path::new("shader").join(name)
             };
-
-            println!("{:?}", path);
 
             match std::fs::read_to_string(&path) {
                 Ok(glsl_code) => Ok(shaderc::ResolvedInclude {

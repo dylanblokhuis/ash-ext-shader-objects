@@ -28,8 +28,8 @@ pub struct PresentNode {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PushConstants {
     model: Mat4,
-    material_index: u64,
-    camera_index: u64,
+    material_pointer: u64,
+    camera_pointer: u64,
 }
 
 impl PresentNode {
@@ -51,8 +51,6 @@ impl PresentNode {
 
         let descriptor_sets =
             vert.create_descriptor_sets(render_instance, &descriptor_set_layouts, &set_layout_info);
-
-        println!("{:?}", set_layout_info);
 
         let shaders = unsafe {
             renderer
@@ -257,36 +255,38 @@ impl SequentialNode for PresentNode {
                     &self.shaders,
                 );
 
+                let secondary_command_buffers = renderer.threaded_command_buffers.read().unwrap();
                 // reset all secondary command buffers
-                renderer
-                    .threaded_command_buffers
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .for_each(|(_, buffer)| {
-                        let color_attachment_formats = &[renderer.surface_format.format];
-                        let mut command_buffer_inheritance_info =
-                            vk::CommandBufferInheritanceRenderingInfo::default()
-                                .view_mask(0)
-                                .color_attachment_formats(color_attachment_formats)
-                                .depth_attachment_format(renderer.depth_image_format)
-                                .rasterization_samples(SampleCountFlags::TYPE_1);
+                secondary_command_buffers.iter().for_each(|(_, buffer)| {
+                    let color_attachment_formats = &[renderer.surface_format.format];
+                    let mut command_buffer_inheritance_info =
+                        vk::CommandBufferInheritanceRenderingInfo::default()
+                            .view_mask(0)
+                            .color_attachment_formats(color_attachment_formats)
+                            .depth_attachment_format(renderer.depth_image_format)
+                            .rasterization_samples(SampleCountFlags::TYPE_1);
 
-                        let inheritence_info = vk::CommandBufferInheritanceInfo::default()
-                            .push_next(&mut command_buffer_inheritance_info);
+                    let inheritence_info = vk::CommandBufferInheritanceInfo::default()
+                        .push_next(&mut command_buffer_inheritance_info);
 
-                        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-                            .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
-                            .inheritance_info(&inheritence_info);
+                    let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+                        .inheritance_info(&inheritence_info);
 
-                        device
-                            .begin_command_buffer(*buffer, &command_buffer_begin_info)
-                            .expect("Begin commandbuffer");
-                    });
+                    device
+                        .begin_command_buffer(*buffer, &command_buffer_begin_info)
+                        .expect("Begin commandbuffer");
+                });
 
                 let queue = crossbeam_queue::ArrayQueue::<usize>::new(objects_count);
+                let camera_pointer = global_descriptors
+                    .buffers
+                    .get(&CAMERA_HANDLE)
+                    .unwrap()
+                    .device_addr;
 
                 render_instance.0.command_thread_pool.scope(|scope| {
+                    let _ = info_span!("PresentNode::run::command_thread_pool").entered();
                     for (mesh_handle, material_handle, transform) in objects.iter(world) {
                         scope.spawn(|_| {
                             let thread_index = rayon::current_thread_index().unwrap();
@@ -302,12 +302,8 @@ impl SequentialNode for PresentNode {
                                 0,
                                 bytemuck::bytes_of(&PushConstants {
                                     model: transform.compute_matrix(),
-                                    camera_index: global_descriptors
-                                        .buffers
-                                        .get(&CAMERA_HANDLE)
-                                        .unwrap()
-                                        .device_addr,
-                                    material_index: global_descriptors
+                                    camera_pointer,
+                                    material_pointer: global_descriptors
                                         .buffers
                                         .get(&material_handle.id())
                                         .unwrap()
@@ -348,35 +344,27 @@ impl SequentialNode for PresentNode {
                     }
                 });
 
-                renderer
-                    .threaded_command_buffers
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .for_each(|(_, buffer)| {
-                        device
-                            .end_command_buffer(*buffer)
-                            .expect("End commandbuffer");
-                    });
+                secondary_command_buffers.iter().for_each(|(_, buffer)| {
+                    device
+                        .end_command_buffer(*buffer)
+                        .expect("End commandbuffer");
+                });
 
                 let queue = queue.into_iter().collect::<Vec<_>>();
 
-                let secondary_command_buffers = renderer
-                    .threaded_command_buffers
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .filter(|(thread_index, _)| queue.contains(thread_index))
-                    .map(|(_, buffer)| *buffer)
-                    .collect::<Vec<_>>();
-
-                renderer
-                    .device
-                    .cmd_execute_commands(draw_command_buffer, &secondary_command_buffers);
+                renderer.device.cmd_execute_commands(
+                    draw_command_buffer,
+                    &secondary_command_buffers
+                        .iter()
+                        .filter(|(thread_index, _)| queue.contains(thread_index))
+                        .map(|(_, buffer)| *buffer)
+                        .collect::<Vec<_>>(),
+                );
 
                 renderer
                     .dynamic_rendering
                     .cmd_end_rendering(draw_command_buffer);
+
                 {
                     let image_memory_barrier = vk::ImageMemoryBarrier2::default()
                         .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)

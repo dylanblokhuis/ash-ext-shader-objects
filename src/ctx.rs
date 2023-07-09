@@ -240,6 +240,8 @@ impl ExampleBase {
             ];
 
             if cfg!(debug_assertions) {
+                println!("{:?}", "Debug mode: enable validation layers");
+
                 layer_names.push(CStr::from_bytes_with_nul_unchecked(
                     b"VK_LAYER_KHRONOS_validation\0",
                 ))

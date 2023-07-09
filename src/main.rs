@@ -64,11 +64,11 @@ fn spawn_stuff(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<Material>>,
-    mut images: ResMut<Assets<Image>>,
+    asset_server: Res<AssetServer>,
 ) {
     let _ = info_span!("Spawning objects");
-    for x in 0..10 {
-        for y in 0..10 {
+    for x in 0..100 {
+        for y in 0..100 {
             commands.spawn(MaterialMeshBundle {
                 mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
                 material: materials.add(Material {
@@ -84,69 +84,15 @@ fn spawn_stuff(
         }
     }
 
-    // commands.spawn(MaterialMeshBundle {
-    //     mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-    //     material: materials.add(Material {
-    //         base_color: Vec3::new(1.0, 0.0, 0.0),
-    //         ..Default::default()
-    //     }),
-    //     transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-    // });
-
-    // commands.spawn(MaterialMeshBundle {
-    //     mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-    //     transform: Transform::from_translation(Vec3::new(5.0, 5.0, 5.0)),
-    //     material: materials.add(Material {
-    //         base_color: Vec3::new(1.0, 1.0, 0.0),
-    //         ..Default::default()
-    //     }),
-    // });
-
     commands.spawn(MaterialMeshBundle {
         mesh: meshes.add(primitives::Cube::new(2.0).into()),
         transform: Transform::from_translation(Vec3::new(-10.0, 1.0, 1.0)),
         material: materials.add(Material {
             base_color: Vec3::new(1.0, 0.0, 0.0),
-            base_color_texture: Some(images.add(Image {
-                data: image::load_from_memory(include_bytes!("../images/public.png")).unwrap(),
-                sampler_descriptor: SamplerDesc {
-                    texel_filter: Filter::LINEAR,
-                    mipmap_mode: SamplerMipmapMode::LINEAR,
-                    address_modes: SamplerAddressMode::REPEAT,
-                },
-            })),
+            base_color_texture: Some(asset_server.load("images/public.png")),
             ..Default::default()
         }),
     });
-
-    // commands.spawn(MaterialMeshBundle {
-    //     mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-    //     transform: Transform::from_translation(Vec3::new(-5.0, -5.0, -5.0)),
-    // });
-    // commands.spawn(MaterialMeshBundle {
-    //     mesh: meshes.add(Mesh {
-    //         vertices: vec![
-    //             Vertex {
-    //                 position: [-1.0, 1.0, 0.0],
-    //                 color: [0.0, 1.0, 0.0, 1.0],
-    //                 ..Default::default()
-    //             },
-    //             Vertex {
-    //                 position: [1.0, 1.0, 0.0],
-    //                 color: [0.0, 0.0, 1.0, 1.0],
-    //                 ..Default::default()
-    //             },
-    //             Vertex {
-    //                 position: [0.0, -1.0, 0.0],
-    //                 color: [1.0, 0.0, 0.0, 1.0],
-    //                 ..Default::default()
-    //             },
-    //         ],
-    //         indices: vec![0, 1, 2],
-    //         primitive_topology: PrimitiveTopology::TRIANGLE_LIST,
-    //     }),
-    //     transform: Transform::from_translation(Vec3::new(5.0, 0.0, 5.0)),
-    // });
 
     commands
         .spawn(CameraBundle {

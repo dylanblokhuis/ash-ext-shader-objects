@@ -1,16 +1,21 @@
 // use std::{collections::HashMap, path::Path};
 
+// use ash::vk::{CullModeFlags, PrimitiveTopology};
 // use bevy::{
-//     asset::{AssetIoError, AssetLoader, LoadContext},
+//     asset::{AssetIoError, AssetLoader, AssetPath, LoadContext, LoadedAsset},
+//     math::vec3,
+//     prelude::*,
 //     utils::{BoxedFuture, HashSet},
 // };
 // use gltf::{
 //     accessor::Iter,
 //     mesh::{util::ReadIndices, Mode},
 //     texture::{MagFilter, MinFilter, WrappingMode},
-//     Material, Node, Primitive,
+//     Node, Primitive,
 // };
 // use thiserror::Error;
+
+// use super::{image::Image, material::AlphaMode, mesh::Mesh};
 
 // /// An error that occurs when loading a glTF file.
 // #[derive(Error, Debug)]
@@ -66,7 +71,7 @@
 //     let buffer_data = load_buffers(&gltf, load_context, load_context.path()).await?;
 
 //     let mut materials = vec![];
-//     let mut named_materials = HashMap::default();
+//     let mut named_materials: HashMap<String, Handle<crate::Material>> = HashMap::default();
 //     let mut linear_textures = HashSet::default();
 //     for material in gltf.materials() {
 //         let handle = load_material(&material, load_context);
@@ -86,6 +91,176 @@
 //         {
 //             linear_textures.insert(texture.texture().index());
 //         }
+//     }
+
+//     let mut meshes = vec![];
+//     let mut named_meshes = HashMap::default();
+//     for gltf_mesh in gltf.meshes() {
+//         let mut primitives = vec![];
+//         for primitive in gltf_mesh.primitives() {
+//             let primitive_label = primitive_label(&gltf_mesh, &primitive);
+//             let primitive_topology = get_primitive_topology(primitive.mode())?;
+
+//             let mut mesh = Mesh {
+//                 primitive_topology,
+//                 indices: vec![],
+//                 vertices: vec![],
+//             };
+
+//             // Read vertex attributes
+//             for (semantic, accessor) in primitive.attributes() {
+//                 let view = accessor.view().unwrap();
+//                 let reader = accessor.reader(|buffer| Some(&buffer.view().unwrap().data()));
+//                 let count = accessor.count();
+
+//                 // Read data based on attribute semantic
+//                 match semantic {
+//                     gltf::Semantic::Positions => {
+//                         if let Some(gltf::accessor::ReadVertices::F32(iter)) =
+//                             reader.read_vertices()
+//                         {
+//                             for vertex in iter.take(count) {
+//                                 let position: [f32; 3] = vertex.into();
+//                                 mesh.vertices.push(Vertex {
+//                                     position,
+//                                     ..Default::default()
+//                                 });
+//                             }
+//                         }
+//                     }
+//                     gltf::Semantic::Normals => {
+//                         if let Some(gltf::accessor::ReadVertices::F32(iter)) =
+//                             reader.read_vertices()
+//                         {
+//                             for (vertex, normal) in mesh.vertices.iter_mut().zip(iter.take(count)) {
+//                                 vertex.normal = normal.into();
+//                             }
+//                         }
+//                     }
+//                     gltf::Semantic::TexCoords(_) => {
+//                         if let Some(gltf::accessor::ReadVertices::F32(iter)) =
+//                             reader.read_vertices()
+//                         {
+//                             for (vertex, uv) in mesh.vertices.iter_mut().zip(iter.take(count)) {
+//                                 vertex.uv = uv.into();
+//                             }
+//                         }
+//                     }
+//                     gltf::Semantic::Tangents => {
+//                         if let Some(gltf::accessor::ReadVertices::F32(iter)) =
+//                             reader.read_vertices()
+//                         {
+//                             for (vertex, tangent) in mesh.vertices.iter_mut().zip(iter.take(count))
+//                             {
+//                                 vertex.tangent = tangent.into();
+//                             }
+//                         }
+//                     }
+//                     gltf::Semantic::Colors(_) => {
+//                         if let Some(gltf::accessor::ReadVertices::F32(iter)) =
+//                             reader.read_vertices()
+//                         {
+//                             for (vertex, color) in mesh.vertices.iter_mut().zip(iter.take(count)) {
+//                                 vertex.color = color.into();
+//                             }
+//                         }
+//                     }
+//                     _ => {}
+//                 }
+//             }
+
+//             // Read vertex indices
+//             let reader = primitive.reader(|buffer| Some(buffer_data[buffer.index()].as_slice()));
+//             if let Some(indices) = reader.read_indices() {
+//                 mesh.indices = match indices {
+//                     ReadIndices::U32(iter) => iter.collect(),
+//                     ReadIndices::U16(iter) => iter.map(|i| i as u32).collect(),
+//                     ReadIndices::U8(iter) => iter.map(|i| i as u32).collect(),
+//                 };
+//             };
+
+//             {
+//                 let morph_target_reader = reader.read_morph_targets();
+//                 if morph_target_reader.len() != 0 {
+//                     let morph_targets_label = morph_targets_label(&gltf_mesh, &primitive);
+//                     let morph_target_image = MorphTargetImage::new(
+//                         morph_target_reader.map(PrimitiveMorphAttributesIter),
+//                         mesh.count_vertices(),
+//                     )?;
+//                     let handle = load_context.set_labeled_asset(
+//                         &morph_targets_label,
+//                         LoadedAsset::new(morph_target_image.0),
+//                     );
+
+//                     mesh.set_morph_targets(handle);
+//                     let extras = gltf_mesh.extras().as_ref();
+//                     if let Option::<MorphTargetNames>::Some(names) =
+//                         extras.and_then(|extras| serde_json::from_str(extras.get()).ok())
+//                     {
+//                         mesh.set_morph_target_names(names.target_names);
+//                     }
+//                 }
+//             }
+
+//             if mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none()
+//                 && matches!(mesh.primitive_topology, PrimitiveTopology::TRIANGLE_LIST)
+//             {
+//                 let vertex_count_before = mesh.count_vertices();
+//                 mesh.duplicate_vertices();
+//                 mesh.compute_flat_normals();
+//                 let vertex_count_after = mesh.count_vertices();
+
+//                 if vertex_count_before != vertex_count_after {
+//                     bevy_log::debug!("Missing vertex normals in indexed geometry, computing them as flat. Vertex count increased from {} to {}", vertex_count_before, vertex_count_after);
+//                 } else {
+//                     bevy_log::debug!(
+//                         "Missing vertex normals in indexed geometry, computing them as flat."
+//                     );
+//                 }
+//             }
+
+//             if let Some(vertex_attribute) = reader
+//                 .read_tangents()
+//                 .map(|v| VertexAttributeValues::Float32x4(v.collect()))
+//             {
+//                 mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vertex_attribute);
+//             } else if mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_some()
+//                 && primitive.material().normal_texture().is_some()
+//             {
+//                 bevy_log::debug!(
+//                     "Missing vertex tangents, computing them using the mikktspace algorithm"
+//                 );
+//                 if let Err(err) = mesh.generate_tangents() {
+//                     bevy_log::warn!(
+//                         "Failed to generate vertex tangents using the mikktspace algorithm: {:?}",
+//                         err
+//                     );
+//                 }
+//             }
+
+//             let mesh = load_context.set_labeled_asset(&primitive_label, LoadedAsset::new(mesh));
+//             primitives.push(super::GltfPrimitive {
+//                 mesh,
+//                 material: primitive
+//                     .material()
+//                     .index()
+//                     .and_then(|i| materials.get(i).cloned()),
+//                 extras: get_gltf_extras(primitive.extras()),
+//                 material_extras: get_gltf_extras(primitive.material().extras()),
+//             });
+//         }
+
+//         let handle = load_context.set_labeled_asset(
+//             &mesh_label(&gltf_mesh),
+//             LoadedAsset::new(super::GltfMesh {
+//                 primitives,
+//                 extras: get_gltf_extras(gltf_mesh.extras()),
+//             }),
+//         );
+//         if let Some(name) = gltf_mesh.name() {
+//             named_meshes.insert(name.to_string(), handle.clone());
+//         }
+//         meshes.push(handle);
 //     }
 
 //     Ok(())
@@ -170,7 +345,10 @@
 // }
 
 // /// Loads a glTF material as a bevy [`StandardMaterial`] and returns it.
-// fn load_material(material: &Material, load_context: &mut LoadContext) -> Handle<StandardMaterial> {
+// fn load_material(
+//     material: &gltf::Material,
+//     load_context: &mut LoadContext,
+// ) -> Handle<crate::Material> {
 //     let material_label = material_label(material);
 
 //     let pbr = material.pbr_metallic_roughness();
@@ -218,8 +396,8 @@
 
 //     load_context.set_labeled_asset(
 //         &material_label,
-//         LoadedAsset::new(StandardMaterial {
-//             base_color: Color::rgba_linear(color[0], color[1], color[2], color[3]),
+//         LoadedAsset::new(crate::Material {
+//             base_color: vec3(color[0], color[1], color[2]),
 //             base_color_texture,
 //             perceptual_roughness: pbr.roughness_factor(),
 //             metallic: pbr.metallic_factor(),
@@ -229,14 +407,90 @@
 //             cull_mode: if material.double_sided() {
 //                 None
 //             } else {
-//                 Some(Face::Back)
+//                 Some(CullModeFlags::BACK)
 //             },
 //             occlusion_texture,
-//             emissive: Color::rgb_linear(emissive[0], emissive[1], emissive[2]),
+//             emissive: vec3(emissive[0], emissive[1], emissive[2]),
 //             emissive_texture,
 //             unlit: material.unlit(),
 //             alpha_mode: alpha_mode(material),
 //             ..Default::default()
 //         }),
 //     )
+// }
+
+// /// Returns the label for the `mesh`.
+// fn mesh_label(mesh: &gltf::Mesh) -> String {
+//     format!("Mesh{}", mesh.index())
+// }
+
+// /// Returns the label for the `mesh` and `primitive`.
+// fn primitive_label(mesh: &gltf::Mesh, primitive: &Primitive) -> String {
+//     format!("Mesh{}/Primitive{}", mesh.index(), primitive.index())
+// }
+
+// fn primitive_name(mesh: &gltf::Mesh, primitive: &Primitive) -> String {
+//     let mesh_name = mesh.name().unwrap_or("Mesh");
+//     if mesh.primitives().len() > 1 {
+//         format!("{}.{}", mesh_name, primitive.index())
+//     } else {
+//         mesh_name.to_string()
+//     }
+// }
+
+// /// Returns the label for the morph target of `primitive`.
+// fn morph_targets_label(mesh: &gltf::Mesh, primitive: &Primitive) -> String {
+//     format!(
+//         "Mesh{}/Primitive{}/MorphTargets",
+//         mesh.index(),
+//         primitive.index()
+//     )
+// }
+
+// /// Returns the label for the `material`.
+// fn material_label(material: &gltf::Material) -> String {
+//     if let Some(index) = material.index() {
+//         format!("Material{index}")
+//     } else {
+//         "MaterialDefault".to_string()
+//     }
+// }
+
+// /// Returns the label for the `texture`.
+// fn texture_label(texture: &gltf::Texture) -> String {
+//     format!("Texture{}", texture.index())
+// }
+
+// /// Returns the label for the `node`.
+// fn node_label(node: &gltf::Node) -> String {
+//     format!("Node{}", node.index())
+// }
+
+// /// Returns the label for the `scene`.
+// fn scene_label(scene: &gltf::Scene) -> String {
+//     format!("Scene{}", scene.index())
+// }
+
+// fn skin_label(skin: &gltf::Skin) -> String {
+//     format!("Skin{}", skin.index())
+// }
+
+// fn alpha_mode(material: &gltf::Material) -> AlphaMode {
+//     match material.alpha_mode() {
+//         gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+//         gltf::material::AlphaMode::Mask => AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),
+//         gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+//     }
+// }
+
+// /// Maps the `primitive_topology` form glTF to `wgpu`.
+// fn get_primitive_topology(mode: Mode) -> Result<PrimitiveTopology, GltfError> {
+//     match mode {
+//         Mode::Points => Ok(PrimitiveTopology::POINT_LIST),
+//         Mode::Lines => Ok(PrimitiveTopology::LINE_LIST),
+//         Mode::LineStrip => Ok(PrimitiveTopology::LINE_STRIP),
+//         Mode::Triangles => Ok(PrimitiveTopology::TRIANGLE_LIST),
+//         Mode::TriangleStrip => Ok(PrimitiveTopology::TRIANGLE_STRIP),
+//         mode => Err(GltfError::UnsupportedPrimitive { mode }),
+//     }
 // }

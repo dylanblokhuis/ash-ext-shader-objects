@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use super::{material::Material, mesh::Mesh};
 
-#[derive(Bundle, Clone)]
+#[derive(Bundle, Clone, Debug)]
 pub struct MaterialMeshBundle {
     pub mesh: Handle<Mesh>,
     pub material: Handle<Material>,

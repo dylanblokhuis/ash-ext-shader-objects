@@ -28,4 +28,4 @@ layout (buffer_reference) buffer Material {
     float depth_bias;
 };
 
-layout(set = 0, binding = 0) uniform sampler2D textures[];
+layout(set = 0, binding = 0) uniform sampler2D u_textures[];
