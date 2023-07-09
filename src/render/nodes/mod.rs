@@ -1,20 +1,16 @@
-use std::{mem::size_of, sync::Arc};
+use std::mem::size_of;
 
 use ash::vk::{
-    self, CompareOp, CullModeFlags, DeviceSize, FrontFace, PipelineBindPoint, RenderingFlags,
-    SampleCountFlags, ShaderEXT, ShaderStageFlags,
+    self, CompareOp, CullModeFlags, FrontFace, PipelineBindPoint, RenderingFlags, SampleCountFlags,
+    ShaderEXT, ShaderStageFlags,
 };
-use bevy::{ecs::system::SystemState, prelude::*};
-use gpu_allocator::MemoryLocation;
+use bevy::prelude::*;
 
-use crate::{
-    buffer::{Buffer, Image},
-    ctx::record_submit_commandbuffer,
-};
+use crate::ctx::record_submit_commandbuffer;
 
 use super::{
-    extract::Extract, material::Material, mesh::Mesh, shaders::Shader, GpuMesh,
-    ProcessedRenderAssets, RenderAllocator, RenderInstance, SequentialNode, CAMERA_HANDLE,
+    material::Material, mesh::Mesh, shaders::Shader, GpuMesh, ProcessedRenderAssets,
+    RenderAllocator, RenderInstance, SequentialNode, CAMERA_HANDLE,
 };
 
 #[derive(Debug)]
@@ -22,6 +18,7 @@ pub struct PresentNode {
     shaders: Vec<ShaderEXT>,
     descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
+    draw_command_recording_chunk_size: usize,
 }
 
 #[repr(C, align(16))]
@@ -33,7 +30,7 @@ struct PushConstants {
 }
 
 impl PresentNode {
-    pub fn new(render_instance: &RenderInstance, render_allocator: &mut RenderAllocator) -> Self {
+    pub fn new(render_instance: &RenderInstance, _render_allocator: &mut RenderAllocator) -> Self {
         let renderer = &render_instance.0;
         let vert = Shader::from_file(
             r#"./shader/main.vert"#,
@@ -86,6 +83,7 @@ impl PresentNode {
             shaders,
             descriptor_sets,
             pipeline_layout,
+            draw_command_recording_chunk_size: 50,
         }
     }
 }
@@ -278,7 +276,17 @@ impl SequentialNode for PresentNode {
                         .expect("Begin commandbuffer");
                 });
 
-                let queue = crossbeam_queue::ArrayQueue::<usize>::new(objects_count);
+                let chunk_amount = self.draw_command_recording_chunk_size;
+                let chunked_handles: Vec<Vec<(&Handle<Mesh>, &Handle<Material>, &Transform)>> =
+                    objects
+                        .iter(world)
+                        .collect::<Vec<_>>()
+                        .chunks(chunk_amount)
+                        .map(|c| c.to_vec())
+                        .collect::<Vec<_>>();
+
+                let queue =
+                    crossbeam_queue::ArrayQueue::<usize>::new(chunked_handles.len() * chunk_amount);
                 let camera_pointer = global_descriptors
                     .buffers
                     .get(&CAMERA_HANDLE)
@@ -286,58 +294,65 @@ impl SequentialNode for PresentNode {
                     .device_addr;
 
                 render_instance.0.command_thread_pool.scope(|scope| {
-                    let _ = info_span!("PresentNode::run::command_thread_pool").entered();
-                    for (mesh_handle, material_handle, transform) in objects.iter(world) {
+                    let _ = info_span!("PresentNode::run::recording_draw_commands").entered();
+                    for chunk in chunked_handles.iter() {
                         scope.spawn(|_| {
                             let thread_index = rayon::current_thread_index().unwrap();
                             let command_buffers = renderer.threaded_command_buffers.read().unwrap();
                             let command_buffer = command_buffers.get(&thread_index).unwrap();
                             let draw_command_buffer = *command_buffer;
-
-                            let mesh = &assets.meshes.get(mesh_handle).unwrap();
-                            device.cmd_push_constants(
-                                draw_command_buffer,
-                                self.pipeline_layout,
-                                vk::ShaderStageFlags::ALL_GRAPHICS,
-                                0,
-                                bytemuck::bytes_of(&PushConstants {
-                                    model: transform.compute_matrix(),
-                                    camera_pointer,
-                                    material_pointer: global_descriptors
-                                        .buffers
-                                        .get(&material_handle.id())
-                                        .unwrap()
-                                        .device_addr,
-                                }),
-                            );
-
-                            renderer
-                                .shader_object
-                                .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
-
-                            device.cmd_bind_vertex_buffers(
-                                draw_command_buffer,
-                                0,
-                                &[mesh.vertex_buffer.buffer],
-                                &[0],
-                            );
-                            if let Some(index_buffer) = &mesh.index_buffer {
-                                device.cmd_bind_index_buffer(
+                            for (mesh_handle, material_handle, transform) in chunk.iter() {
+                                device.cmd_push_constants(
                                     draw_command_buffer,
-                                    index_buffer.buffer,
+                                    self.pipeline_layout,
+                                    vk::ShaderStageFlags::ALL_GRAPHICS,
                                     0,
-                                    vk::IndexType::UINT32,
+                                    bytemuck::bytes_of(&PushConstants {
+                                        model: transform.compute_matrix(),
+                                        camera_pointer,
+                                        material_pointer: global_descriptors
+                                            .buffers
+                                            .get(&material_handle.id())
+                                            .unwrap()
+                                            .device_addr,
+                                    }),
                                 );
-                                device.cmd_draw_indexed(
+
+                                let mesh = &assets.meshes.get(mesh_handle).unwrap();
+                                renderer
+                                    .shader_object
+                                    .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
+
+                                device.cmd_bind_vertex_buffers(
                                     draw_command_buffer,
-                                    mesh.index_count,
-                                    1,
                                     0,
-                                    0,
-                                    1,
+                                    &[mesh.vertex_buffer.buffer],
+                                    &[0],
                                 );
-                            } else {
-                                device.cmd_draw(draw_command_buffer, mesh.vertex_count, 1, 0, 1);
+                                if let Some(index_buffer) = &mesh.index_buffer {
+                                    device.cmd_bind_index_buffer(
+                                        draw_command_buffer,
+                                        index_buffer.buffer,
+                                        0,
+                                        vk::IndexType::UINT32,
+                                    );
+                                    device.cmd_draw_indexed(
+                                        draw_command_buffer,
+                                        mesh.index_count,
+                                        1,
+                                        0,
+                                        0,
+                                        1,
+                                    );
+                                } else {
+                                    device.cmd_draw(
+                                        draw_command_buffer,
+                                        mesh.vertex_count,
+                                        1,
+                                        0,
+                                        1,
+                                    );
+                                }
                             }
                             queue.push(thread_index).unwrap();
                         });
