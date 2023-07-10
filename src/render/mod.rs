@@ -6,6 +6,7 @@ pub mod image;
 pub mod material;
 pub mod mesh;
 pub mod nodes;
+pub mod pipeline;
 pub mod primitives;
 pub mod shaders;
 
@@ -17,8 +18,9 @@ use std::{
 };
 
 use ash::vk::{
-    self, DescriptorImageInfo, ImageCreateInfo, PrimitiveTopology,
-    VertexInputAttributeDescription2EXT, VertexInputBindingDescription2EXT, VertexInputRate,
+    self, DescriptorImageInfo, ImageCreateInfo, PrimitiveTopology, VertexInputAttributeDescription,
+    VertexInputAttributeDescription2EXT, VertexInputBindingDescription,
+    VertexInputBindingDescription2EXT, VertexInputRate,
 };
 use bevy::{
     app::{AppExit, AppLabel, SubApp},
@@ -380,7 +382,14 @@ struct GpuMesh {
 }
 
 impl GpuMesh {
-    pub fn vertex_binding_descriptors() -> VertexInputBindingDescription2EXT<'static> {
+    pub fn vertex_binding_descriptors() -> VertexInputBindingDescription {
+        VertexInputBindingDescription::default()
+            .binding(0)
+            .input_rate(VertexInputRate::VERTEX)
+            .stride(std::mem::size_of::<mesh::Vertex>() as u32)
+    }
+
+    pub fn vertex_binding_descriptors2() -> VertexInputBindingDescription2EXT<'static> {
         VertexInputBindingDescription2EXT::default()
             .binding(0)
             .input_rate(VertexInputRate::VERTEX)
@@ -388,7 +397,37 @@ impl GpuMesh {
             .stride(std::mem::size_of::<mesh::Vertex>() as u32)
     }
 
-    pub fn vertex_input_descriptors() -> [vk::VertexInputAttributeDescription2EXT<'static>; 5] {
+    pub fn vertex_input_descriptors() -> [vk::VertexInputAttributeDescription; 5] {
+        return [
+            VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(ash::vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(mesh::Vertex, position) as u32),
+            VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(ash::vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(mesh::Vertex, normal) as u32),
+            VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(2)
+                .format(ash::vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(mesh::Vertex, uv) as u32),
+            VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(3)
+                .format(ash::vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(mesh::Vertex, tangent) as u32),
+            VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(4)
+                .format(ash::vk::Format::R32G32B32A32_SFLOAT)
+                .offset(offset_of!(mesh::Vertex, color) as u32),
+        ];
+    }
+
+    pub fn vertex_input_descriptors2() -> [vk::VertexInputAttributeDescription2EXT<'static>; 5] {
         return [
             VertexInputAttributeDescription2EXT::default()
                 .binding(0)

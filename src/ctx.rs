@@ -1,16 +1,17 @@
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use ash::vk::{
-    KhrGetPhysicalDeviceProperties2Fn, KhrPortabilityEnumerationFn, KhrPortabilitySubsetFn,
+    KhrGetMemoryRequirements2Fn, KhrGetPhysicalDeviceProperties2Fn, KhrPortabilityEnumerationFn,
+    KhrPortabilitySubsetFn,
 };
 use ash::{
     extensions::{
-        ext::{DebugUtils, ShaderObject},
+        ext::DebugUtils,
         khr::{DynamicRendering, Surface, Swapchain, Synchronization2},
     },
     vk::{
         BufferImageCopy, CommandBuffer, ExtDescriptorIndexingFn, ImageLayout,
         PhysicalDeviceBufferDeviceAddressFeaturesKHR, PhysicalDeviceDescriptorIndexingFeatures,
-        PhysicalDeviceShaderObjectFeaturesEXT, API_VERSION_1_2,
+        API_VERSION_1_2,
     },
 };
 use ash::{vk, Entry};
@@ -187,7 +188,6 @@ pub struct ExampleBase {
     pub entry: Entry,
     pub instance: Instance,
     pub device: Device,
-    pub shader_object: ShaderObject,
     pub synchronization2: Synchronization2,
     pub dynamic_rendering: DynamicRendering,
     pub surface_loader: Surface,
@@ -234,10 +234,9 @@ impl ExampleBase {
             let entry = Entry::linked();
             let app_name = CStr::from_bytes_with_nul_unchecked(b"VulkanTriangle\0");
 
-            let mut layer_names = vec![
-                CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_synchronization2\0"),
-                CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_shader_object\0"),
-            ];
+            let mut layer_names = vec![CStr::from_bytes_with_nul_unchecked(
+                b"VK_LAYER_KHRONOS_synchronization2\0",
+            )];
 
             if cfg!(debug_assertions) {
                 println!("{:?}", "Debug mode: enable validation layers");
@@ -348,7 +347,6 @@ impl ExampleBase {
                 Swapchain::NAME.as_ptr(),
                 DynamicRendering::NAME.as_ptr(),
                 Synchronization2::NAME.as_ptr(),
-                ShaderObject::NAME.as_ptr(),
                 ExtDescriptorIndexingFn::NAME.as_ptr(),
                 #[cfg(any(target_os = "macos", target_os = "ios"))]
                 KhrPortabilitySubsetFn::NAME.as_ptr(),
@@ -366,9 +364,6 @@ impl ExampleBase {
                 vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
             let mut synchronization2_features =
                 vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
-
-            let mut shader_object_features =
-                PhysicalDeviceShaderObjectFeaturesEXT::default().shader_object(true);
 
             let mut buffer_features =
                 PhysicalDeviceBufferDeviceAddressFeaturesKHR::default().buffer_device_address(true);
@@ -398,8 +393,6 @@ impl ExampleBase {
                 .enabled_features(&features)
                 .push_next(&mut dynamic_rendering_features)
                 .push_next(&mut synchronization2_features)
-                // .push_next(&mut vertex_dynamic_state_features)
-                .push_next(&mut shader_object_features)
                 .push_next(&mut buffer_features)
                 .push_next(&mut indexing_features);
 
@@ -617,7 +610,6 @@ impl ExampleBase {
                 .create_semaphore(&semaphore_create_info, None)
                 .unwrap();
 
-            let shader_object = ShaderObject::new(&instance, &device);
             let immutable_samplers = Self::create_samplers(&device);
             let (command_thread_pool, threaded_command_buffers) =
                 Self::create_command_thread_pool(device.clone(), queue_family_index);
@@ -628,7 +620,6 @@ impl ExampleBase {
             ExampleBase {
                 entry,
                 instance,
-                shader_object,
                 device,
                 synchronization2,
                 dynamic_rendering,

@@ -4,21 +4,24 @@ use std::{
     path::Path,
 };
 
-use ash::vk::{self, ShaderCodeTypeEXT, ShaderCreateInfoEXT};
+use ash::vk::{self};
 use rspirv_reflect::BindingCount;
+use shaderc::CompilationArtifact;
 
 use crate::{chunky_list::TempList, ctx::SamplerDesc};
 
 use super::RenderInstance;
 
+#[derive(Clone)]
 pub struct Shader {
     pub kind: ShaderKind,
-    pub spirv: Vec<u8>,
     pub spirv_descripor_set_layouts: StageDescriptorSetLayouts,
-    entry_point: String,
-    entry_point_cstr: CString,
+    pub entry_point: String,
+    pub entry_point_cstr: CString,
+    pub module: vk::ShaderModule,
 }
 
+#[derive(Clone)]
 pub enum ShaderKind {
     Vertex,
     Fragment,
@@ -46,16 +49,31 @@ type DescriptorSetLayout = BTreeMap<u32, rspirv_reflect::DescriptorInfo>;
 type StageDescriptorSetLayouts = BTreeMap<u32, DescriptorSetLayout>;
 
 impl Shader {
-    pub fn new(spirv: &[u8], kind: ShaderKind, entry_point: &str) -> Self {
-        let refl_info = rspirv_reflect::Reflection::new_from_spirv(spirv).unwrap();
+    pub fn new(
+        render_instance: &RenderInstance,
+        spirv: CompilationArtifact,
+        kind: ShaderKind,
+        entry_point: &str,
+    ) -> Self {
+        let refl_info = rspirv_reflect::Reflection::new_from_spirv(spirv.as_binary_u8()).unwrap();
         let descriptor_sets = refl_info.get_descriptor_sets().unwrap();
+
+        let module = unsafe {
+            render_instance
+                .device()
+                .create_shader_module(
+                    &vk::ShaderModuleCreateInfo::default().code(&spirv.as_binary()),
+                    None,
+                )
+                .expect("Vertex shader module error")
+        };
 
         Self {
             kind,
             spirv_descripor_set_layouts: descriptor_sets,
             entry_point: entry_point.to_string(),
-            spirv: spirv.to_vec(),
             entry_point_cstr: CString::new(entry_point).unwrap(),
+            module,
         }
     }
 
@@ -104,13 +122,13 @@ impl Shader {
         descriptor_sets
     }
 
-    pub fn ext_shader_create_info(&self) -> ShaderCreateInfoEXT {
-        ShaderCreateInfoEXT::default()
-            .name(self.entry_point_cstr.as_c_str())
-            .code(&self.spirv)
-            .code_type(ShaderCodeTypeEXT::SPIRV)
-            .stage(self.kind.to_vk_shader_stage_flag())
-    }
+    // pub fn ext_shader_create_info(&self) -> ShaderCreateInfoEXT {
+    //     ShaderCreateInfoEXT::default()
+    //         .name(self.entry_point_cstr.as_c_str())
+    //         .code(&self.spirv)
+    //         .code_type(ShaderCodeTypeEXT::SPIRV)
+    //         .stage(self.kind.to_vk_shader_stage_flag())
+    // }
 
     pub fn create_descriptor_set_layouts(
         &self,
@@ -310,7 +328,12 @@ impl Shader {
         (set_layouts, set_layout_info)
     }
 
-    pub fn from_file(path: &str, kind: ShaderKind, entry_point: &str) -> Self {
+    pub fn from_file(
+        render_instance: &RenderInstance,
+        path: &str,
+        kind: ShaderKind,
+        entry_point: &str,
+    ) -> Self {
         let compiler = shaderc::Compiler::new().unwrap();
         let mut options = shaderc::CompileOptions::new().unwrap();
         options.add_macro_definition("EP", Some("main"));
@@ -349,6 +372,6 @@ impl Shader {
             )
             .unwrap();
 
-        Self::new(spirv.as_binary_u8(), kind, entry_point)
+        Self::new(render_instance, spirv, kind, entry_point)
     }
 }

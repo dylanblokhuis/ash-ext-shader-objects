@@ -1,23 +1,21 @@
 use std::mem::size_of;
 
-use ash::vk::{
-    self, CompareOp, CullModeFlags, FrontFace, PipelineBindPoint, RenderingFlags, SampleCountFlags,
-    ShaderEXT, ShaderStageFlags,
-};
+use ash::vk::{self, PipelineBindPoint, RenderingFlags, SampleCountFlags, ShaderStageFlags};
 use bevy::prelude::*;
 
 use crate::ctx::record_submit_commandbuffer;
 
 use super::{
-    material::Material, mesh::Mesh, shaders::Shader, GpuMesh, ProcessedRenderAssets,
-    RenderAllocator, RenderInstance, SequentialNode, CAMERA_HANDLE,
+    material::Material,
+    mesh::Mesh,
+    pipeline::{GraphicsPipeline, GraphicsPipelineDescriptor, PrimitiveState},
+    shaders::Shader,
+    GpuMesh, ProcessedRenderAssets, RenderAllocator, RenderInstance, SequentialNode, CAMERA_HANDLE,
 };
 
 #[derive(Debug)]
 pub struct PresentNode {
-    shaders: Vec<ShaderEXT>,
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    pipeline_layout: vk::PipelineLayout,
+    pipeline: GraphicsPipeline,
     draw_command_recording_chunk_size: usize,
 }
 
@@ -31,58 +29,44 @@ struct PushConstants {
 
 impl PresentNode {
     pub fn new(render_instance: &RenderInstance, _render_allocator: &mut RenderAllocator) -> Self {
-        let renderer = &render_instance.0;
         let vert = Shader::from_file(
-            r#"./shader/main.vert"#,
+            render_instance,
+            "./shader/main.vert",
             super::shaders::ShaderKind::Vertex,
             "main",
         );
         let frag = Shader::from_file(
-            r#"./shader/main.frag"#,
+            render_instance,
+            "./shader/main.frag",
             super::shaders::ShaderKind::Fragment,
             "main",
         );
 
-        let (descriptor_set_layouts, set_layout_info) =
-            vert.create_descriptor_set_layouts(render_instance);
-
-        let descriptor_sets =
-            vert.create_descriptor_sets(render_instance, &descriptor_set_layouts, &set_layout_info);
-
-        let shaders = unsafe {
-            renderer
-                .shader_object
-                .create_shaders(
-                    &[
-                        vert.ext_shader_create_info()
-                            .set_layouts(&descriptor_set_layouts),
-                        frag.ext_shader_create_info()
-                            .set_layouts(&descriptor_set_layouts),
-                    ],
-                    None,
-                )
-                .unwrap()
-        };
-
-        let pipeline_layout = unsafe {
-            renderer
-                .device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(&descriptor_set_layouts)
-                        .push_constant_ranges(&[vk::PushConstantRange::default()
-                            .stage_flags(ShaderStageFlags::ALL_GRAPHICS)
-                            .offset(0)
-                            .size(size_of::<PushConstants>() as u32)]),
-                    None,
-                )
-                .unwrap()
-        };
+        let pipeline = GraphicsPipeline::new(
+            render_instance,
+            GraphicsPipelineDescriptor {
+                vertex_shader: vert,
+                vertex_input: vk::PipelineVertexInputStateCreateInfo::default()
+                    .vertex_binding_descriptions(&[GpuMesh::vertex_binding_descriptors()])
+                    .vertex_attribute_descriptions(&GpuMesh::vertex_input_descriptors()),
+                fragment_shader: frag,
+                primitive: PrimitiveState {
+                    topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                push_constant_range: Some(
+                    vk::PushConstantRange::default()
+                        .stage_flags(ShaderStageFlags::ALL_GRAPHICS)
+                        .offset(0)
+                        .size(size_of::<PushConstants>() as u32),
+                ),
+                viewport: render_instance.0.surface_resolution,
+            },
+        );
 
         Self {
-            shaders,
-            descriptor_sets,
-            pipeline_layout,
+            pipeline,
             draw_command_recording_chunk_size: 50,
         }
     }
@@ -101,7 +85,7 @@ impl SequentialNode for PresentNode {
         world.resource_scope(
             |world, mut global_descriptors: Mut<super::global_descriptors::GlobalDescriptorSet>| {
                 global_descriptors.update_descriptor_set(
-                    self.descriptor_sets[0],
+                    self.pipeline.descriptor_sets[0],
                     world.resource::<RenderInstance>(),
                 )
             },
@@ -201,17 +185,25 @@ impl SequentialNode for PresentNode {
                 renderer
                     .dynamic_rendering
                     .cmd_begin_rendering(draw_command_buffer, &render_pass_begin_info);
+
+                device.cmd_bind_pipeline(
+                    draw_command_buffer,
+                    PipelineBindPoint::GRAPHICS,
+                    self.pipeline.pipeline,
+                );
+
                 device.cmd_bind_descriptor_sets(
                     draw_command_buffer,
                     PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout,
+                    self.pipeline.layout,
                     0,
-                    &self.descriptor_sets,
+                    &self.pipeline.descriptor_sets,
                     &[],
                 );
 
-                renderer.shader_object.cmd_set_viewport_with_count(
+                device.cmd_set_viewport(
                     draw_command_buffer,
+                    0,
                     &[vk::Viewport {
                         x: 0.0,
                         y: 0.0,
@@ -221,36 +213,11 @@ impl SequentialNode for PresentNode {
                         max_depth: 1.0,
                     }],
                 );
-                renderer.shader_object.cmd_set_scissor_with_count(
+
+                device.cmd_set_scissor(
                     draw_command_buffer,
+                    0,
                     &[renderer.surface_resolution.into()],
-                );
-                renderer
-                    .shader_object
-                    .cmd_set_cull_mode(draw_command_buffer, CullModeFlags::BACK);
-                renderer
-                    .shader_object
-                    .cmd_set_front_face(draw_command_buffer, FrontFace::COUNTER_CLOCKWISE);
-                renderer
-                    .shader_object
-                    .cmd_set_depth_test_enable(draw_command_buffer, true);
-                renderer
-                    .shader_object
-                    .cmd_set_depth_write_enable(draw_command_buffer, true);
-                renderer
-                    .shader_object
-                    .cmd_set_depth_compare_op(draw_command_buffer, CompareOp::LESS_OR_EQUAL);
-
-                renderer.shader_object.cmd_set_vertex_input(
-                    draw_command_buffer,
-                    &[GpuMesh::vertex_binding_descriptors()],
-                    &GpuMesh::vertex_input_descriptors(),
-                );
-
-                renderer.shader_object.cmd_bind_shaders(
-                    draw_command_buffer,
-                    &[ShaderStageFlags::VERTEX, ShaderStageFlags::FRAGMENT],
-                    &self.shaders,
                 );
 
                 let secondary_command_buffers = renderer.threaded_command_buffers.read().unwrap();
@@ -304,7 +271,7 @@ impl SequentialNode for PresentNode {
                             for (mesh_handle, material_handle, transform) in chunk.iter() {
                                 device.cmd_push_constants(
                                     draw_command_buffer,
-                                    self.pipeline_layout,
+                                    self.pipeline.layout,
                                     vk::ShaderStageFlags::ALL_GRAPHICS,
                                     0,
                                     bytemuck::bytes_of(&PushConstants {
@@ -319,9 +286,6 @@ impl SequentialNode for PresentNode {
                                 );
 
                                 let mesh = &assets.meshes.get(mesh_handle).unwrap();
-                                renderer
-                                    .shader_object
-                                    .cmd_set_primitive_topology(draw_command_buffer, mesh.topology);
 
                                 device.cmd_bind_vertex_buffers(
                                     draw_command_buffer,
