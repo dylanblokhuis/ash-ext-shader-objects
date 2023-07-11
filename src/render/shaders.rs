@@ -92,7 +92,7 @@ impl Shader {
                 } else {
                     descriptor_pool_sizes.push(vk::DescriptorPoolSize {
                         ty: *ty,
-                        descriptor_count: 1,
+                        descriptor_count: render_instance.0.max_descriptor_count,
                     })
                 }
             }
@@ -183,6 +183,8 @@ impl Shader {
                         }
                     };
 
+                    println!("{} binding: {:?} {}", binding_index, binding, descriptor_count);
+
                     match binding.ty {
                         rspirv_reflect::DescriptorType::UNIFORM_BUFFER
                         | rspirv_reflect::DescriptorType::UNIFORM_TEXEL_BUFFER
@@ -256,7 +258,7 @@ impl Shader {
                                 let renderer = &render_instance.0;
                                 bindings.push(
                                     vk::DescriptorSetLayoutBinding::default()
-                                        .descriptor_count(descriptor_count)
+                                        .descriptor_count(1)
                                         .descriptor_type(vk::DescriptorType::SAMPLER)
                                         .stage_flags(stage_flags)
                                         .binding(*binding_index)

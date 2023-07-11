@@ -78,6 +78,7 @@ use crate::buffer::{Buffer, Image};
 //             .expect("End commandbuffer");
 //     }
 // }
+pub const RESERVED_DESCRIPTOR_COUNT: u32 = 32;
 
 /// Helper function for submitting command buffers. Immediately waits for the fence before the command buffer
 /// is executed. That way we can delay the waiting for the fences by 1 frame which is good for performance.
@@ -323,8 +324,6 @@ impl ExampleBase {
                         .iter()
                         .enumerate()
                         .find_map(|(index, info)| {
-                            println!("{:?}", info);
-
                             let supports_graphic_and_surface =
                                 info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                                     && surface_loader
@@ -342,6 +341,8 @@ impl ExampleBase {
                         })
                 })
                 .expect("Couldn't find suitable device.");
+
+            let device_properties = instance.get_physical_device_properties(pdevice);
             let queue_family_index = queue_family_index as u32;
             let device_extension_names_raw = [
                 Swapchain::NAME.as_ptr(),
@@ -441,7 +442,6 @@ impl ExampleBase {
                 PresentMode::AutoNoVsync => vk::PresentModeKHR::IMMEDIATE,
                 PresentMode::AutoVsync => vk::PresentModeKHR::FIFO_RELAXED,
             };
-            println!("{:?}", present_mode);
             assert!(
                 present_modes.contains(&present_mode),
                 "Present mode not supported."
@@ -617,6 +617,8 @@ impl ExampleBase {
             let synchronization2 = Synchronization2::new(&instance, &device);
             let dynamic_rendering = DynamicRendering::new(&instance, &device);
 
+            println!("{:?}", device_properties);
+
             ExampleBase {
                 entry,
                 instance,
@@ -629,7 +631,14 @@ impl ExampleBase {
                 command_thread_pool,
                 threaded_command_buffers,
                 // TODO: fetch from device
-                max_descriptor_count: 1024,
+                max_descriptor_count: {
+                    (512 * 1024).min(
+                    device_properties
+                        .limits
+                        .max_per_stage_descriptor_sampled_images // https://github.com/KhronosGroup/MoltenVK/issues/394 - prob just use 16 samplers and then bind them instead of COMBINED_IMAGE_SAMPLERS
+                        - RESERVED_DESCRIPTOR_COUNT,
+                    )                     
+                },
                 device_memory_properties,
                 surface_loader,
                 surface_format,

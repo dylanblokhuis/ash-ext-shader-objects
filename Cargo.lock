@@ -1257,6 +1257,7 @@ dependencies = [
 [[package]]
 name = "gpu-allocator"
 version = "0.22.0"
+source = "git+https://github.com/dylanblokhuis/gpu-allocator.git#2e46127f7677dc9ff4f01c071b281d6250d04776"
 dependencies = [
  "ash",
  "backtrace",

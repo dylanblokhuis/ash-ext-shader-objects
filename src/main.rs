@@ -1,8 +1,6 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
-use ash::vk::Filter;
-use ash::vk::SamplerAddressMode;
-use ash::vk::SamplerMipmapMode;
+
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -10,15 +8,12 @@ use bevy::window::close_on_esc;
 use bevy::window::WindowMode;
 use camera_controller::CameraController;
 use camera_controller::CameraControllerPlugin;
-use ctx::SamplerDesc;
 use render::bundles::Camera;
 use render::bundles::CameraBundle;
 use render::bundles::MaterialMeshBundle;
-use render::image::Image;
 use render::material::Material;
 use render::mesh::Mesh;
 use render::primitives;
-use render::primitives::Box;
 use render::RenderPlugin;
 use std::default::Default;
 
@@ -44,7 +39,7 @@ fn main() {
             primary_window: Some(Window {
                 resolution: (1280.0, 720.0).into(),
                 title: "Someday".to_string(),
-                present_mode: bevy::window::PresentMode::Mailbox,
+                present_mode: bevy::window::PresentMode::default(),
                 resizable: false,
                 mode: WindowMode::Windowed,
                 ..default()
@@ -67,22 +62,22 @@ fn spawn_stuff(
     asset_server: Res<AssetServer>,
 ) {
     let _ = info_span!("Spawning objects");
-    for x in 0..50 {
-        for y in 0..50 {
-            commands.spawn(MaterialMeshBundle {
-                mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
-                material: materials.add(Material {
-                    base_color: Vec3::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
-                    ..Default::default()
-                }),
-                transform: Transform::from_translation(Vec3::new(
-                    x as f32 * 2.0,
-                    y as f32 * 2.0,
-                    x as f32 * 2.0,
-                )),
-            });
-        }
-    }
+    // for x in 0..50 {
+    //     for y in 0..50 {
+    //         commands.spawn(MaterialMeshBundle {
+    //             mesh: meshes.add(Box::new(1.0, 1.0, 1.0).into()),
+    //             material: materials.add(Material {
+    //                 base_color: Vec3::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
+    //                 ..Default::default()
+    //             }),
+    //             transform: Transform::from_translation(Vec3::new(
+    //                 x as f32 * 2.0,
+    //                 y as f32 * 2.0,
+    //                 x as f32 * 2.0,
+    //             )),
+    //         });
+    //     }
+    // }
 
     commands.spawn(MaterialMeshBundle {
         mesh: meshes.add(primitives::Cube::new(2.0).into()),

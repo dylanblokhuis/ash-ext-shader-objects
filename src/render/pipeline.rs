@@ -341,7 +341,6 @@ impl GraphicsPipeline {
         let (descriptor_set_layouts, set_layout_info) = desc
             .fragment_shader
             .create_descriptor_set_layouts(render_instance);
-
         let pipeline_layout = unsafe {
             render_instance
                 .device()
@@ -377,12 +376,12 @@ impl GraphicsPipeline {
 
         let mut depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default();
         if let Some(ref ds) = desc.depth_stencil {
-            let vk_format = ds.format;
-            let vk_layout = if ds.is_read_only(desc.primitive.cull_mode) {
-                vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL
-            } else {
-                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-            };
+            // let vk_format = ds.format;
+            // let vk_layout = if ds.is_read_only(desc.primitive.cull_mode) {
+            //     vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL
+            // } else {
+            //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            // };
 
             if ds.is_depth_enabled() {
                 depth_stencil = depth_stencil
@@ -411,17 +410,18 @@ impl GraphicsPipeline {
 
         let shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
-                .name(desc.vertex_shader.entry_point_cstr.as_c_str())
+                .name(&desc.vertex_shader.entry_point_cstr)
                 .stage(vk::ShaderStageFlags::VERTEX)
                 .module(desc.vertex_shader.module),
             vk::PipelineShaderStageCreateInfo::default()
-                .name(desc.fragment_shader.entry_point_cstr.as_c_str())
+                .name(&desc.fragment_shader.entry_point_cstr)
                 .stage(vk::ShaderStageFlags::FRAGMENT)
                 .module(desc.fragment_shader.module),
         ];
 
         let input_assembly_state =
-            vk::PipelineInputAssemblyStateCreateInfo::default().topology(desc.primitive.topology);
+            vk::PipelineInputAssemblyStateCreateInfo::default().topology(desc.primitive.topology).primitive_restart_enable(false);
+
 
         let viewports = &[vk::Viewport {
             x: 0.0,
@@ -437,6 +437,10 @@ impl GraphicsPipeline {
             .scissors(scissors)
             .viewports(viewports);
 
+        let color_attachment_formats = [render_instance.0.surface_format.format];
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_attachment_formats);
+
         let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&desc.vertex_input)
@@ -448,7 +452,8 @@ impl GraphicsPipeline {
             .layout(pipeline_layout)
             // todo
             .multisample_state(&multisample_state_info)
-            .color_blend_state(&color_blend_state);
+            .color_blend_state(&color_blend_state)
+            .push_next(&mut rendering_info);
 
         let pipeline = unsafe {
             render_instance
@@ -460,6 +465,7 @@ impl GraphicsPipeline {
                 )
                 .unwrap()[0]
         };
+
         let descriptor_sets = desc.fragment_shader.create_descriptor_sets(
             render_instance,
             &descriptor_set_layouts,

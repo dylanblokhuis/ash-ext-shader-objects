@@ -14,7 +14,7 @@ layout (location = 0) out vec4 uFragColor;
 void main() { 
     // uFragColor = texture(textures[0], o_uv);
     if (pc.material.base_color_texture_index != -1)
-        uFragColor = texture(u_textures[pc.material.base_color_texture_index], o_uv);
+        uFragColor = texture(sampler2D(u_textures[pc.material.base_color_texture_index], sampler_nlr), o_uv);
     else if (pc.material.base_color != vec3(0.0))
         uFragColor = vec4(pc.material.base_color, 1.0);
     else

@@ -172,8 +172,14 @@ pub struct NonSendMarker;
 pub struct RenderApp;
 
 impl Plugin for RenderPlugin {
+    fn build(&self, _app: &mut App) {}
+
+    fn ready(&self, app: &App) -> bool {
+        app.world.components().iter().find(|c| c.name() == "bevy_window::raw_handle::RawHandleWrapper").is_some()
+    }
+
     /// Initializes the renderer, sets up the [`RenderSet`](RenderSet) and creates the rendering sub-app.
-    fn build(&self, app: &mut App) {
+    fn finish(&self, app: &mut App) {
         app.init_resource::<ScratchMainWorld>()
             .add_asset::<Mesh>()
             .add_asset::<Material>()

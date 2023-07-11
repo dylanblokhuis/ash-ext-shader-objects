@@ -24,7 +24,7 @@ gltf = { version = "1.2.0", default-features = false, features = [
     "names",
     "utils",
 ] }
-gpu-allocator = { path = "../gpu-allocator", features = ["vulkan", "ash"] }
+gpu-allocator = { git = "https://github.com/dylanblokhuis/gpu-allocator.git", features = ["vulkan", "ash"] }
 image = { version = "0.24", features = ["png", "jpeg"], default-features = false }
 inline-spirv = "0.1.6"
 once_cell = "1.18.0"
@@ -40,7 +40,6 @@ tracing-tracy = { version = "0.10", optional = true }
 
 [features]
 tracing = ["tracing-tracy", "tracing-subscriber"]
-
 
 [dependencies.bevy]
 default-features = false
